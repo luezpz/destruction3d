@@ -2,8 +2,8 @@
 
 Status tracker across sessions. Update at the end of every session. Spec: `PLAN.md`. Rules: `AGENTS.md`.
 
-**Current milestone:** M3 done and verified in a browser (Chrome WebGPU, automated): impacts crack/drop structures, islands fall, worker path works.
-**Next task:** M4 spike (PLAN §4b, three options listed below). Optional tuning: concrete damageRate vs impact hold (a 0.8 m concrete tower survives most single hits).
+**Current milestone:** M4 — joint spike done (spherical joints + implicit angular motors chosen).
+**Next task:** M4 joint chains: plasticity loop (moment -> corner stress -> motor target update, permanent-set test), joint fracture, then promotion/demotion handshake. Then skinning (weights CSR, pose texture). Optional tuning: concrete damageRate vs impact hold.
 **Blockers:** none
 
 ## M1 Skeleton
@@ -34,7 +34,7 @@ Status tracker across sessions. Update at the end of every session. Spec: `PLAN.
 ## M4 Skinning + deformation — PLAN §4, §4b
 - [ ] Variable-length weights (CSR), pose texture, TSL skin + CPU reference
 - [ ] Fake offsets (dents, ring cracks)
-- [ ] Spike first (cantilever chain, 10 s): (a) explicit spring forces on Rapier, (b) fixed joints + calibrated residual error as deformation (user idea, hacky), (c) Jolt `SixDOFConstraint` spring motors if a/b fail. Pick by stability + sag error; record in NOTES.
+- [x] Spike (cantilever chain, 10 s): (a) explicit springs, (b) fixed joints, (c) motors — found in Rapier itself (spherical joint angular motors), no Jolt needed. Chosen (c); numbers in NOTES "M4 joint spike". Backend: `createSpringJoint`, `setSpringTarget`, `readBodyStates`, `applyWrenches`.
 - [ ] Joint chains, promotion/demotion handshake, plasticity
 - [ ] Tests per PLAN §4 / M4
 
@@ -44,6 +44,7 @@ Status tracker across sessions. Update at the end of every session. Spec: `PLAN.
 
 ## Decisions / deviations log
 <!-- YYYY-MM-DD: decision — reason -->
+- 2026-11-14: 4b joints = spherical impulse joint + implicit angular motors (stiffness x1e-2, 4 substeps, 16 iters) — explicit springs ~1e5x too soft under the stability cap; fixed joints give uncalibrated stress and no plastic target. Supersedes "explicit forces/torques" below.
 - 2026-11-14: Impact peaks held >= 0.05 s and until a converged solve (was: one request) — single-step loads were filtered away; PCG continues across requests when loads are unchanged (supersedes "always restart") — restarts stalled convergence after breaks.
 - 2026-11-14: Worker always restarts PCG on the latest loads each request (warm start keeps progress) so long solves never hide new impacts; scripted removals are queued and applied by the next request (one tick latency). Island re-fracture not supported yet (handoff skips components already debris).
 - 2026-11-14: Moving islands rendered by CPU rigid placement into the shared vertex buffer (debug path; replaced by M4 pose texture). Tier 1 runs only on converged solves (main thread v1).
@@ -56,6 +57,7 @@ Status tracker across sessions. Update at the end of every session. Spec: `PLAN.
 
 ## Session log
 <!-- YYYY-MM-DD: what was done, what's next -->
+- 2026-11-14: M4 joint spike: `kernels/jointSpring.ts` (error/wrench/cap), backend spring joints + body states; `tests/jointSpring.test.ts` (6 tests); 93 tests pass, typecheck OK. Note: `integrityCore` "continues PCG" test failed once (timing-based, `budgetMs: 0.001`), passed 3 reruns.
 - 2026-11-14: Debug UI: structure-sim stats (TickReply.stats + damage), chunk/bond heatmaps, sync/async fracture toggle, sim params (Hz, substeps, budget, tol, hold, gravity, Rapier iters), material multipliers. 87 tests pass, build OK; not browser-verified.
 - 2026-11-14: Demo made to work (browser-verified): impact hold + PCG continuation fixes, cursor-aimed throws, shift+click chunk removal, 7 new scenes (slab on columns, tower, bridge, cantilever balcony, house, brick gate, ice pillars); 85 tests pass, build OK.
 - 2026-11-14: Read PLAN.md, set up agent docs.

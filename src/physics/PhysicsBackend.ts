@@ -62,9 +62,23 @@ export interface PhysicsBackend {
   setCollisionGroups(c: ColliderHandle, groups: number): void;
   /** Joint between two bodies at body-local anchors; contacts between them are disabled. */
   createJoint(kind: JointKind, a: BodyHandle, b: BodyHandle, anchorA: [number, number, number], anchorB: [number, number, number]): JointHandle;
+  /**
+   * Bendable bond (PLAN §4b): translation locked at the anchors, rotation sprung by implicit motors per joint-frame axis
+   * (x = bond normal: torsion GJ/L; y, z: bending EI/L) toward `target` angles. frameA/frameB: joint frame in each body (quat x,y,z,w).
+   * @param stiffness (N m/rad), damping (N m s/rad) per axis.
+   */
+  createSpringJoint(a: BodyHandle, b: BodyHandle, anchorA: [number, number, number], anchorB: [number, number, number],
+    frameA: [number, number, number, number], frameB: [number, number, number, number],
+    stiffness: [number, number, number], damping: [number, number, number]): JointHandle;
+  /** Moves the motor rest angles of a spring joint (plastic set); stiffness/damping as at creation. */
+  setSpringTarget(j: JointHandle, target: [number, number, number], stiffness: [number, number, number], damping: [number, number, number]): void;
   removeJoint(j: JointHandle): void;
   /** Writes pose (x, y, z, qx, qy, qz, qw) of each body into out (7 floats each). */
   readBodyPoses(bodies: ArrayLike<BodyHandle>, out: Float32Array): void;
+  /** Writes x(3) q(4) linvel(3) angvel(3) of each body (13 doubles each, world frame) for joint springs (PLAN §4b). */
+  readBodyStates(bodies: ArrayLike<BodyHandle>, out: Float64Array): void;
+  /** Applies one-step impulses from world wrenches (force(3), torque(3) per body) times dt; wakes the bodies. */
+  applyWrenches(bodies: ArrayLike<BodyHandle>, wrench: Float64Array, dt: number): void;
   /** Calls fn for every contact-force event since the last drain. */
   drainImpactEvents(fn: (e: ImpactEvent) => void): void;
 }

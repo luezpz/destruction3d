@@ -132,6 +132,29 @@ export class RapierBackend implements PhysicsBackend {
     return j.handle;
   }
 
+  createSpringJoint(a: BodyHandle, b: BodyHandle, anchorA: [number, number, number], anchorB: [number, number, number],
+    frameA: [number, number, number, number], frameB: [number, number, number, number],
+    stiffness: [number, number, number], damping: [number, number, number]): JointHandle {
+    const data = RAPIER.JointData.spherical({ x: anchorA[0], y: anchorA[1], z: anchorA[2] }, { x: anchorB[0], y: anchorB[1], z: anchorB[2] });
+    const raw = this.world.createImpulseJoint(data, this.world.getRigidBody(a), this.world.getRigidBody(b), true);
+    raw.setContactsEnabled(false);
+    raw.setFrameX1({ x: frameA[0], y: frameA[1], z: frameA[2], w: frameA[3] });
+    raw.setFrameX2({ x: frameB[0], y: frameB[1], z: frameB[2], w: frameB[3] });
+    for (let i = 0; i < 3; i++) this.sphericalJoint(raw.handle).configureMotorModel(RAPIER.JointAxis.AngX + i, RAPIER.MotorModel.ForceBased);
+    this.setSpringTarget(raw.handle, [0, 0, 0], stiffness, damping);
+    return raw.handle;
+  }
+
+  /** createImpulseJoint types spherical joints as Generic (no motor API in 0.21): wrap the handle in the spherical class. */
+  private sphericalJoint(j: JointHandle): RAPIER.SphericalImpulseJoint {
+    return new RAPIER.SphericalImpulseJoint(this.world.impulseJoints.raw, this.world.bodies, j);
+  }
+
+  setSpringTarget(j: JointHandle, target: [number, number, number], stiffness: [number, number, number], damping: [number, number, number]): void {
+    const joint = this.sphericalJoint(j);
+    for (let i = 0; i < 3; i++) joint.configureMotorPosition(RAPIER.JointAxis.AngX + i, target[i], stiffness[i], damping[i]);
+  }
+
   removeJoint(j: JointHandle): void {
     const joint = this.world.getImpulseJoint(j);
     if (joint) this.world.removeImpulseJoint(joint, true);
@@ -143,6 +166,26 @@ export class RapierBackend implements PhysicsBackend {
       const t = body.translation(), r = body.rotation();
       out[7 * i] = t.x; out[7 * i + 1] = t.y; out[7 * i + 2] = t.z;
       out[7 * i + 3] = r.x; out[7 * i + 4] = r.y; out[7 * i + 5] = r.z; out[7 * i + 6] = r.w;
+    }
+  }
+
+  readBodyStates(bodies: ArrayLike<BodyHandle>, out: Float64Array): void {
+    for (let i = 0; i < bodies.length; i++) {
+      const body = this.world.getRigidBody(bodies[i]), o = 13 * i;
+      const t = body.translation(), r = body.rotation(), v = body.linvel(), w = body.angvel();
+      out[o] = t.x; out[o + 1] = t.y; out[o + 2] = t.z;
+      out[o + 3] = r.x; out[o + 4] = r.y; out[o + 5] = r.z; out[o + 6] = r.w;
+      out[o + 7] = v.x; out[o + 8] = v.y; out[o + 9] = v.z;
+      out[o + 10] = w.x; out[o + 11] = w.y; out[o + 12] = w.z;
+    }
+  }
+
+  applyWrenches(bodies: ArrayLike<BodyHandle>, wrench: Float64Array, dt: number): void {
+    for (let i = 0; i < bodies.length; i++) {
+      const body = this.world.getRigidBody(bodies[i]), o = 6 * i;
+      if (!body.isDynamic()) continue;
+      body.applyImpulse({ x: wrench[o] * dt, y: wrench[o + 1] * dt, z: wrench[o + 2] * dt }, true);
+      body.applyTorqueImpulse({ x: wrench[o + 3] * dt, y: wrench[o + 4] * dt, z: wrench[o + 5] * dt }, true);
     }
   }
 

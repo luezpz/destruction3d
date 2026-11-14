@@ -171,8 +171,10 @@ with a 1.6-cell support touches 8 cells (27 with a wider one); a Voronoi cell ha
 Each chunk of a *bendable part* (steel/aluminium panel, post, rail, door; rubber and clay too, with `sigmaY = 0` meaning springs back and a low `sigmaY` meaning clay-like) is a dynamic Rapier body; neighbours are linked by a **compliant joint** instead of a rigid fixed joint.
 - Why not a pure fixed joint: its error is the solver's residual (depends on mass, dt, iterations, joint frequency), not on a material stiffness, so
   error -> stress is not controllable and differs per chunk mass. Use a generic joint with all 6 axes motor-sprung to the rest pose with explicit
-  stiffness `k` (per axis from `EA/L, G A/L, GJ/L, EI/L`, as in section 2) and damping. Then `F = k e` is a physical-ish bond force. (Verify in the Rapier JS
-  version that 6-axis motor springs exist; fallback: apply the spring as explicit forces/torques on the two bodies each step with a locked-free joint.)
+  stiffness `k` (per axis from `EA/L, G A/L, GJ/L, EI/L`, as in section 2) and damping. Then `F = k e` is a physical-ish bond force.
+  **Spike result (M4, NOTES "M4 joint spike")**: Rapier JS has no 6-axis motors; explicit springs are far too soft under the cap below. Use a **spherical joint
+  (translation locked) with implicit angular motors** (torsion GJ/L, bending EI/L, scaled ~1e-2 so motor compliance dominates the solver error; 4 substeps, 16 iterations);
+  moments `M = k phi` from body poses; axial/shear are rigid (not measured). Plastic set = motor target angles.
 - **Stiffness cap (required)**: real `EA/L` for steel is ~1e9 N/m on kg-scale chunks; no iterative/explicit spring is stable at that frequency. Cap per axis
   `k <= m_eff (omega_max)^2` with `omega_max ~ 1/(2-4 dt)`, `m_eff` the reduced mass of the pair (inertia for rotational axes). Stress is computed from the joint **force**
   `F = k e` (the load the bond actually carries in quasi-static equilibrium), not from strain times real E, so the cap only exaggerates elastic sag; yield and fracture loads stay correct.

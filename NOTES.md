@@ -8,6 +8,7 @@
 - `kernels/` pure typed-array math: `bondStiffness.ts` (kd + K_b blocks ii/ij/jj, bond forces), `blockCsr.ts` (6x6 block CSR build/assemble/matvec), `pcg.ts` (block-Jacobi PCG, begin/iterate slices), `inertialRelief.ts` (free-island load balancing), `failureRatio.ts` (corner stresses -> ratio, `MaterialViews`), `damage.ts` (low-pass, damage, removal, propagation; chunk->bond adjacency CSR).
 - `integrity/` `BondSolver.ts` (owns buffers, supports eliminated, free numbering, warm start, `iterateBudget`, `active` chunk mask), `loads.ts` (masses, gravity), `connectivity.ts` (tier 0 early-exit BFS -> detached components), `StressTier.ts` (tier 1 step: forces -> ratios -> damage -> tier 0; `removeBonds` for scripted cuts). Worker comes later in M3.
 - `physics/` `PhysicsBackend.ts` (interface, group bits, packGroups), `RapierBackend.ts` (only Rapier importer), `fromModel.ts` (Float64 -> Float32 hull conversion).
+- `kernels/jointSpring.ts` joint error `e = [dx, phi]` in the bond frame from body states (13 doubles/body), spring wrench, stiffness cap (PLAN §4b spike).
 - `integrity/islandMass.ts` mass/COM/principal inertia (Jacobi) from rest cell volumes.
 - `integrity/impactLoads.ts` peak contact force per chunk between tier ticks, x2 amplification.
 - `integrity/IntegrityCore.ts` message handler (TickRequest -> TickReply: broken, detached, ratio, version, returned f); `IntegrityClient.ts` (`InlineIntegrity`, `WorkerIntegrity`); `integrity.worker.ts` entry.
@@ -32,7 +33,14 @@
 - Grace group (membership GRACE, filter DEBRIS only) lets a new island overlap the structure without push-out.
 - Contact force events: `ActiveEvents.CONTACT_FORCE_EVENTS` + threshold; `drainContactForceEvents` gives total force magnitude + max-force direction.
 - `narrowPhase.contactPair(c1, c2, world.bodies, cb)` — `bodies` arg is required in 0.21 (missing it silently never calls cb).
-- `GenericImpulseJoint` has **no per-axis motor API** in JS (only Unit/Spherical joints do) -> PLAN §4b fallback: explicit spring forces/torques per step.
+- `GenericImpulseJoint` has **no per-axis motor API** in JS; `SphericalImpulseJoint` does (AngX/Y/Z `configureMotorPosition`, `MotorModel.ForceBased`). But `createImpulseJoint(JointData.spherical(..))` returns a `GenericImpulseJoint` object (raw type reports Generic): wrap the handle with `new RAPIER.SphericalImpulseJoint(world.impulseJoints.raw, world.bodies, handle)` (done in `RapierBackend.sphericalJoint`). `setFrameX1/X2` exist on all impulse joints.
+
+## M4 joint spike (tests/jointSpring.test.ts, 2026-11-14): steel cantilever, 10 cubes h=0.1 m (7.85 kg), 10 s
+- **Chosen: spherical joint (translation locked) + 3 implicit angular motors** (`createSpringJoint`). 4 substeps @60 Hz, 16 solver iters, k = raw GJ/L, EI/L x 1e-2: sag 8 mm (EB 0.04 mm), no drift, root moment k*phi within ~9% of statics. At k x1 the sag (1.3 mm) is solver error, so k*phi overestimates the moment 6x; at x1e-3/1e-4 the readout drops (0.79/0.45). Keep the motor compliance just above the solver floor.
+- Solver floor (sag of fixed joints): 0.50 m (4 it, 1 sub), 5.1 cm (4 it, 4 sub), 4.5 cm (16 it, 1 sub), 3.2 mm (16 it, 4 sub). Chains need substeps + iterations.
+- (a) explicit springs (`kernels/jointSpring.ts`): kernel exact on short chains (sag within 1% of capped statics) but the stability cap `k <= m omega^2` makes steel ~1e5x too soft (predicted 6 m sag at 4 substeps), long chains barely damp (joint-relative damping leaves low modes undamped). A translational spring at lever l also needs `k l^2 <= I omega^2`, else bodies spin up. Kept only as the error/moment readout (k = motor stiffness, c = 0).
+- (b) fixed joints: stiffest at few iterations, but error -> stress is uncalibrated (PLAN §4b) and there is no motor to move a plastic rest.
+- Axial/shear bond forces are not measured by (c) (translation locked); metals fail by bending first; get N/V from equilibrium if needed.
 - **Handles are non-integer doubles** (index+generation encoded): never store them in Int32/Uint32 arrays (silently removes the wrong collider). Use Float64Array / plain numbers.
 - `setAdditionalMassProperties` takes effect only after a `step`; the principal-frame quaternion (`IslandDesc.inertiaFrame`) is honoured (tested).
 - Contact-force event `dir` points from collider1 (A) to collider2 (B): force on B = +dir F, on A = -dir F. Which collider is "1" depends on creation order, so always use the sign rule.
