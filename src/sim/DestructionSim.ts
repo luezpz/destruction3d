@@ -15,6 +15,7 @@ export interface SimOptions {
   g?: number; // m/s^2
   budgetMs?: number; // solver time per request
   tol?: number; // tier-1 PCG tolerance (NOTES: ~1e-4)
+  impactHold?: number; // s an impact peak stays in the loads (~ material filterTime, default 0.05)
   /** Integrity backend; default inline (synchronous). Pass a WorkerIntegrity in the app. */
   client?: IntegrityClient;
 }
@@ -22,6 +23,11 @@ export interface SimOptions {
 export class DestructionSim {
   readonly client: IntegrityClient;
   readonly impacts: ImpactLoads;
+  /**
+   * Impact peaks already sent, re-sent until a converged solve has used them AND they are `impactHold` s old: a peak
+   * seen by only one tier tick is attenuated ~dt/filterTime by the ratio low-pass, so ball hits never broke anything.
+   */
+  private readonly heldImpacts: ImpactLoads;
   readonly handoff: IslandHandoff;
   /** Bonds broken since the sim started (cumulative list for renderers): brokenLog[0 .. brokenTotal). */
   readonly brokenLog: Uint32Array;
@@ -38,10 +44,12 @@ export class DestructionSim {
   private pendingRemove: number[] = [];
   private readonly budgetMs: number;
   private readonly tol: number;
+  private readonly impactHold: number;
 
   constructor(readonly model: ChunkModel, table: MaterialTable, private readonly physics: PhysicsBackend, o: SimOptions = {}) {
     this.client = o.client ?? new InlineIntegrity(model, table);
     this.impacts = new ImpactLoads(model.chunkCount);
+    this.heldImpacts = new ImpactLoads(model.chunkCount);
     this.handoff = new IslandHandoff(model, table, physics);
     this.brokenLog = new Uint32Array(model.bondCount);
     this.ratio = new Float32Array(model.bondCount);
@@ -51,6 +59,7 @@ export class DestructionSim {
     this.spare = new Float64Array(6 * model.chunkCount);
     this.budgetMs = o.budgetMs ?? 2;
     this.tol = o.tol ?? 1e-4;
+    this.impactHold = o.impactHold ?? 0.05;
   }
 
   /**
@@ -60,6 +69,7 @@ export class DestructionSim {
   tick(dt: number): number {
     this.physics.drainImpactEvents((e) => this.impacts.addContact(e.chunkA, e.chunkB, e.force, e.dir[0], e.dir[1], e.dir[2], this.isStatic));
     this.handoff.update(dt);
+    this.heldImpacts.advance(dt);
     this.pendingDt += dt;
     const reply = this.client.poll();
     const broke = reply ? this.apply(reply) : 0;
@@ -76,7 +86,8 @@ export class DestructionSim {
     const f = this.spare!;
     this.spare = null;
     f.set(this.gravity);
-    this.impacts.applyAndClear(f);
+    this.impacts.moveInto(this.heldImpacts);
+    this.heldImpacts.apply(f);
     const remove = Uint32Array.from(this.pendingRemove);
     this.pendingRemove.length = 0;
     this.client.request({ type: 'tick', dt: this.pendingDt, f, remove, budgetMs: this.budgetMs, tol: this.tol });
@@ -87,6 +98,7 @@ export class DestructionSim {
   /** Applies a reply: logs breaks, hands detached components to physics. @returns bonds broken. */
   private apply(r: TickReply): number {
     this.inFlight = false;
+    if (r.converged) this.heldImpacts.dropOlderThan(this.impactHold);
     this.spare = r.f;
     this.ratio = r.ratio;
     this.version = r.version;

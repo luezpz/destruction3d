@@ -2,8 +2,8 @@
 
 Status tracker across sessions. Update at the end of every session. Spec: `PLAN.md`. Rules: `AGENTS.md`.
 
-**Current milestone:** M3 code-complete; app (now using the worker) never viewed in a browser (needs user)
-**Next task:** User: run `npm run dev`, throw balls / break bonds, report issues (worker only verified by build + inline/structured-clone tests). Then M4 spike (PLAN §4b, three options listed below).
+**Current milestone:** M3 done and verified in a browser (Chrome WebGPU, automated): impacts crack/drop structures, islands fall, worker path works.
+**Next task:** M4 spike (PLAN §4b, three options listed below). Optional tuning: concrete damageRate vs impact hold (a 0.8 m concrete tower survives most single hits).
 **Blockers:** none
 
 ## M1 Skeleton
@@ -29,7 +29,7 @@ Status tracker across sessions. Update at the end of every session. Spec: `PLAN.
 - [x] Material matrix test
 - [x] Component labeling + island handoff to Rapier (mass/inertia, grace group) — headless + Rapier test; not in the app yet
 - [x] Impact loads from contact events (peak per tier tick, x2 amplification; `dir` sign verified)
-- [x] Done-when (headless tests): wall removal drops dependents; overloaded cantilever cracks + falls after delay. Visual check pending.
+- [x] Done-when (headless tests): wall removal drops dependents; overloaded cantilever cracks + falls after delay. Visual check done 2026-11-14 (cantilever balcony scene).
 
 ## M4 Skinning + deformation — PLAN §4, §4b
 - [ ] Variable-length weights (CSR), pose texture, TSL skin + CPU reference
@@ -44,6 +44,7 @@ Status tracker across sessions. Update at the end of every session. Spec: `PLAN.
 
 ## Decisions / deviations log
 <!-- YYYY-MM-DD: decision — reason -->
+- 2026-11-14: Impact peaks held >= 0.05 s and until a converged solve (was: one request) — single-step loads were filtered away; PCG continues across requests when loads are unchanged (supersedes "always restart") — restarts stalled convergence after breaks.
 - 2026-11-14: Worker always restarts PCG on the latest loads each request (warm start keeps progress) so long solves never hide new impacts; scripted removals are queued and applied by the next request (one tick latency). Island re-fracture not supported yet (handoff skips components already debris).
 - 2026-11-14: Moving islands rendered by CPU rigid placement into the shared vertex buffer (debug path; replaced by M4 pose texture). Tier 1 runs only on converged solves (main thread v1).
 - 2026-11-14: New `src/sim/` layer glues integrity + physics (both allowed there); grace window 0.1 s (longer lets islands sink into ledges). Material-matrix wall case asserts "a highly loaded bond fails", not the probe argmax (damage redistributes load in indeterminate structures).
@@ -55,6 +56,7 @@ Status tracker across sessions. Update at the end of every session. Spec: `PLAN.
 
 ## Session log
 <!-- YYYY-MM-DD: what was done, what's next -->
+- 2026-11-14: Demo made to work (browser-verified): impact hold + PCG continuation fixes, cursor-aimed throws, shift+click chunk removal, 7 new scenes (slab on columns, tower, bridge, cantilever balcony, house, brick gate, ice pillars); 85 tests pass, build OK.
 - 2026-11-14: Read PLAN.md, set up agent docs.
 - 2026-11-14: M1 implemented: model, materials, generators, culling, Rapier backend + facts tests (20 passing), debug app. Build OK. Not yet viewed in a browser.
 - 2026-11-14: M3 worker: IntegrityCore (message handler), Inline/WorkerIntegrity clients, integrity.worker.ts, DestructionSim one-request-in-flight; 83 tests pass, build emits worker chunk.

@@ -52,6 +52,9 @@ export class IntegrityCore {
   readonly tier: StressTier;
   version = 0;
   private sinceTier = 0;
+  /** A PCG solve is in progress on `solveF` (restarting every request stalls CG on cracked, ill-conditioned lattices). */
+  private solving = false;
+  private readonly solveF: Float64Array;
   // Per-request accumulation (setup-time sized; reply copies are small and transferred).
   private readonly brokenAcc: number[] = [];
   private readonly compChunks: number[] = [];
@@ -60,6 +63,7 @@ export class IntegrityCore {
   constructor(readonly model: ChunkModel, table: MaterialTable) {
     this.solver = new BondSolver(model, table);
     this.tier = new StressTier(model, table, this.solver);
+    this.solveF = new Float64Array(6 * model.chunkCount);
   }
 
   /** Copies the tier's last broken list and detached components into the per-request accumulators. */
@@ -81,11 +85,16 @@ export class IntegrityCore {
       this.tier.removeBonds(req.remove);
       this.collect();
     }
-    // Always restart PCG on the latest loads (warm-started from the current u, so progress is kept); a long solve must
-    // not hide newer impacts.
-    this.solver.begin(req.f);
+    // Continue the running solve while loads and stiffness are unchanged; otherwise restart PCG on the latest loads
+    // (warm-started from the current u), so a long solve never hides newer impacts.
+    if (!this.solving || req.remove.length || !sameLoads(req.f, this.solveF)) {
+      this.solveF.set(req.f);
+      this.solver.begin(req.f);
+      this.solving = true;
+    }
     const converged = this.solver.iterateBudget(req.budgetMs, req.tol);
     if (converged) {
+      this.solving = false;
       this.tier.step(this.sinceTier);
       this.sinceTier = 0;
       this.collect();
@@ -96,4 +105,10 @@ export class IntegrityCore {
       detachedOffset: Uint32Array.from(this.compOffset), ratio: Float32Array.from(this.tier.ratioFiltered),
     };
   }
+}
+
+/** True when load vectors a, b (6n,) are equal (exact: loads are rebuilt from the same gravity + held impacts). */
+function sameLoads(a: Float64Array, b: Float64Array): boolean {
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
 }

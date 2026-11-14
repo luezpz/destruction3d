@@ -15,7 +15,7 @@
 - `render/islandPose.ts` CPU rigid placement of island chunk verts (debug until M4).
 - `main.ts` (M3 app): physics.step -> sim.tick per fixed step; `syncRender` reveals broken faces, places islands, recolours bond lines by filtered ratio.
 - `render/` `cullBuffers.ts` (headless outer/inner index buffers, append-only reveal), `chunkMesh.ts` (two meshes sharing one vertex buffer), `bondLines.ts` (debug lines by ratio).
-- `scenes.ts` demo structures, `main.ts` debug app (GUI: scene, visibility, break random bonds, throw ball (space), stats).
+- `scenes.ts` 11 demo scenes (box lists, mixed materials, `carve` for openings) + per-scene camera; `main.ts` debug app (GUI: scene, visibility, break random bonds, stats; click/space = ball aimed at cursor with gravity lead, shift+click = cut all bonds of the static chunk under the cursor). `window.demo` exposes `cur` (model/sim/physics), `load`, `throwBall` for console/automated checks.
 - `tests/` model, culling, Rapier facts, solver (`solver.test.ts`, incl. `[bench]` line: `npx vitest run tests/solver.test.ts -t benchmark --reporter=verbose`).
 
 ## Conventions
@@ -51,6 +51,9 @@
 - `findDetached` reports any component without a support, so only pass bonds of the static structure.
 
 ## Gotchas
+- Impacts last one physics step but tier 1 low-passes ratios (~filterTime): `DestructionSim` holds each sent peak (`heldImpacts`) until a converged reply AND age >= `impactHold` (0.05 s). Without this, ball hits never broke anything.
+- `IntegrityCore` must not restart PCG every request: restarted CG with a 2 ms budget stalls on cracked lattices (never converged after the first breaks). It continues while loads are bit-identical and no removals; held impacts keep f identical across requests.
+- Browser check without a user: playwright-core + system Chrome (`--enable-unsafe-webgpu`, headed, off-screen window) drives `npm run dev`; keep the harness outside the repo.
 - tsconfig lib has no `WebWorker` (it breaks DOM event typing). Don't use `/// <reference lib="webworker" />` either (applies program-wide); type the worker scope minimally as in `integrity.worker.ts`.
 - `ChunkModel` and `MaterialTable` (Map, Infinity) structured-clone fine; worker init clones them once.
 - WebGPU rejects zero-size buffers: inner index buffer capacity kept >= 3.

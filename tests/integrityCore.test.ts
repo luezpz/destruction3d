@@ -83,3 +83,41 @@ describe('DestructionSim with a slow integrity client', () => {
     physics.dispose();
   });
 });
+
+describe('impact hold and solve continuation (demo fixes)', () => {
+  it('re-sends an impact peak until a converged reply arrives after the hold window', () => {
+    const m = cantilever(4, 0.2), physics = new RapierBackend();
+    const client = new DelayedClient(new IntegrityCore(m, table));
+    const sim = new DestructionSim(m, table, physics, { client, impactHold: 0.05 });
+    const g = new Float64Array(6 * m.chunkCount);
+    gravityLoads(chunkMasses(m, table), 9.81, g);
+    const extraX = () => client.requests[client.requests.length - 1].f[6 * 3] - g[6 * 3]; // impact on chunk 3, x row
+    sim.impacts.add(3, 1000, 0, 0);
+    sim.tick(1 / 60);
+    expect(extraX()).toBeGreaterThan(0);
+    // Each delivered reply converges; the peak must survive until it is >= 0.05 s old.
+    let sentWithImpact = 1;
+    for (let k = 0; k < 10; k++) {
+      client.deliver();
+      sim.tick(1 / 60);
+      if (extraX() > 0) sentWithImpact++;
+    }
+    expect(sentWithImpact).toBe(3); // ages 0, 1/60, 2/60 < 0.05; dropped once 3/60 old
+    expect(extraX()).toBe(0);
+    physics.dispose();
+  });
+
+  it('continues PCG across requests while loads are unchanged; restarts when they change', () => {
+    const m = cantilever(30, 0.2), core = new IntegrityCore(m, table);
+    const f = new Float64Array(6 * m.chunkCount);
+    gravityLoads(chunkMasses(m, table), 9.81, f);
+    const slice = (ff: Float64Array) => core.tick({ type: 'tick', dt: 1 / 60, f: ff, remove: new Uint32Array(0), budgetMs: 0.001, tol: 1e-14 });
+    slice(f);
+    const first = core.solver.iterations;
+    slice(f);
+    expect(core.solver.iterations).toBeGreaterThan(first); // continued, not restarted
+    const f2 = f.slice(); f2[6 * 10 + 1] -= 500;
+    slice(f2);
+    expect(core.solver.iterations).toBeLessThanOrEqual(first); // restarted on new loads
+  });
+});

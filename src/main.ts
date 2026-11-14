@@ -62,7 +62,7 @@ async function main(): Promise<void> {
   scene.add(ground);
 
   const table = createMaterialTable();
-  const params = { scene: SCENES[0] as SceneName, outer: true, inner: true, bondLines: false, breakCount: 10, ballSpeed: 15, ballRadius: 0.25 };
+  const params = { scene: SCENES[0] as SceneName, outer: true, inner: true, bondLines: false, breakCount: 10, ballSpeed: 20, ballRadius: 0.25 };
   const stats = { chunks: 0, surface: 0, bonds: 0, outerTris: 0, innerTris: 0, brokenBonds: 0, islands: 0 };
   let cur: Loaded | null = null;
 
@@ -76,7 +76,11 @@ async function main(): Promise<void> {
       cur.sim.dispose();
       cur.physics.dispose();
     }
-    const model = buildScene(params.scene, table);
+    const demo = buildScene(params.scene, table);
+    const model = demo.model;
+    camera.position.set(...demo.camera);
+    controls.target.set(...demo.target);
+    controls.update();
     const meshes = createChunkMeshes(model, table, buildCullBuffers(model));
     const bonds = createBondLines(model);
     const physics = new RapierBackend({ impactThreshold: 500 });
@@ -133,13 +137,49 @@ async function main(): Promise<void> {
     stats.islands = sim.handoff.islands.length;
   }
 
-  /** Throws a ball from the camera along the view direction. */
+  const raycaster = new THREE.Raycaster();
+  const ndc = new THREE.Vector2();
+  /** Ray from the camera through the last pointer position (NDC). */
+  function pointerRay(): THREE.Ray {
+    raycaster.setFromCamera(ndc, camera);
+    return raycaster.ray;
+  }
+
+  /** Chunk under the pointer that is still part of the static structure, or -1. */
+  function pickStaticChunk(): number {
+    if (!cur) return -1;
+    pointerRay();
+    const hits = raycaster.intersectObjects([cur.meshes.outer, cur.meshes.inner], false);
+    const offs = cur.model.renderVertOffset;
+    for (const h of hits) {
+      if (!h.face) continue;
+      // Vertex -> chunk: largest c with renderVertOffset[c] <= vertex (offsets are (n+1,), ascending).
+      let lo = 0, hi = cur.model.chunkCount - 1;
+      while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (offs[mid] <= h.face.a) lo = mid; else hi = mid - 1; }
+      if (cur.sim.isStatic[lo]) return lo;
+    }
+    return -1;
+  }
+
+  /** Scripted removal of every bond of the picked chunk (it drops; dependents follow via tier 0/1). */
+  function removePickedChunk(): void {
+    const c = pickStaticChunk();
+    if (c < 0 || !cur) return;
+    const m = cur.model, bonds: number[] = [];
+    for (let b = 0; b < m.bondCount; b++) if ((m.bondA[b] === c || m.bondB[b] === c) && !cur.broken[b]) bonds.push(b);
+    cur.sim.removeBonds(bonds);
+  }
+
+  /** Throws a ball from the camera towards the pointer (aim raised to cancel the gravity drop at the hit distance). */
   function throwBall(): void {
     if (!cur) return;
-    const dir = new THREE.Vector3();
-    camera.getWorldDirection(dir);
-    const v = dir.clone().multiplyScalar(params.ballSpeed);
-    const p = camera.position;
+    const ray = pointerRay();
+    const hit = raycaster.intersectObjects([cur.meshes.outer, cur.meshes.inner], false)[0];
+    const dist = hit ? hit.distance : 8;
+    const t = dist / params.ballSpeed;
+    const aim = ray.direction.clone().multiplyScalar(dist).add(new THREE.Vector3(0, 0.5 * 9.81 * t * t, 0)).normalize();
+    const v = aim.multiplyScalar(params.ballSpeed);
+    const p = ray.origin;
     const body = cur.physics.createSphere(params.ballRadius, [p.x, p.y, p.z], [v.x, v.y, v.z], 7850, ALL);
     const mesh = new THREE.Mesh(new THREE.SphereGeometry(params.ballRadius, 24, 16), new THREE.MeshStandardNodeMaterial({ color: 0x444a52, metalness: 0.8, roughness: 0.3 }));
     mesh.castShadow = true;
@@ -156,17 +196,32 @@ async function main(): Promise<void> {
   gui.add({ breakRandom }, 'breakRandom').name('break random bonds');
   gui.add(params, 'ballSpeed', 1, 60);
   gui.add(params, 'ballRadius', 0.05, 1);
-  gui.add({ throwBall }, 'throwBall').name('throw ball (space)');
+  gui.add({ throwBall }, 'throwBall').name('throw ball (click / space)');
+  gui.add({ hint: 'shift+click: remove chunk' }, 'hint').name('tip').disable();
   gui.add({ reset: load }, 'reset');
   const sf = gui.addFolder('stats');
   for (const k of Object.keys(stats) as (keyof typeof stats)[]) sf.add(stats, k).disable().listen();
 
+  // Pointer: track for aiming; a click (no drag) throws, shift+click removes the chunk under the cursor.
+  let downX = 0, downY = 0;
+  renderer.domElement.addEventListener('pointermove', (e) => {
+    ndc.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+  });
+  renderer.domElement.addEventListener('pointerdown', (e) => { downX = e.clientX; downY = e.clientY; });
+  renderer.domElement.addEventListener('pointerup', (e) => {
+    if (Math.hypot(e.clientX - downX, e.clientY - downY) > 4 || e.button !== 0) return; // orbit drag
+    ndc.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+    if (e.shiftKey) removePickedChunk(); else throwBall();
+  });
   window.addEventListener('keydown', (e) => { if (e.code === 'Space') throwBall(); });
   window.addEventListener('resize', () => {
     camera.aspect = innerWidth / innerHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(innerWidth, innerHeight);
   });
+
+  // Debug handle for automated browser checks (console: demo.cur.sim.brokenTotal, ...).
+  (window as unknown as { demo: unknown }).demo = { get cur() { return cur; }, params, stats, load, throwBall, breakRandom, removePickedChunk, ndc };
 
   const pose = new Float32Array(7);
   let frame = 0;
