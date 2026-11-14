@@ -71,7 +71,8 @@ export class RapierBackend implements PhysicsBackend {
       .setAngvel({ x: desc.angvel[0], y: desc.angvel[1], z: desc.angvel[2] })
       .setAdditionalMassProperties(
         desc.mass, { x: 0, y: 0, z: 0 },
-        { x: desc.inertia[0], y: desc.inertia[1], z: desc.inertia[2] }, { x: 0, y: 0, z: 0, w: 1 },
+        { x: desc.inertia[0], y: desc.inertia[1], z: desc.inertia[2] },
+        { x: desc.inertiaFrame[0], y: desc.inertiaFrame[1], z: desc.inertiaFrame[2], w: desc.inertiaFrame[3] },
       );
     const body = this.world.createRigidBody(bodyDesc);
     const colliders = desc.chunks.map((ch) => {

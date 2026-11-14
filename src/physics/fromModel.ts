@@ -1,7 +1,22 @@
 // Float64 ChunkModel -> Float32 Rapier boundary conversions.
 
 import type { ChunkModel } from '../model/ChunkModel';
-import type { IslandChunk } from './PhysicsBackend';
+import type { IslandChunk, IslandDesc } from './PhysicsBackend';
+import type { IslandMass } from '../integrity/islandMass';
+
+/**
+ * Dynamic island desc for chunks[from..to) at rest (body frame = world axes, origin = COM, PLAN §3 steps 2-3).
+ * @param mp mass properties from islandMassProperties. @param linvel/angvel initial velocity (0 when leaving the structure).
+ */
+export function islandDesc(model: ChunkModel, chunks: ArrayLike<number>, from: number, to: number, mp: IslandMass,
+  groups: number, linvel: [number, number, number] = [0, 0, 0], angvel: [number, number, number] = [0, 0, 0]): IslandDesc {
+  const list: IslandChunk[] = [];
+  for (let k = from; k < to; k++) list.push(chunkHull(model, chunks[k], mp.com));
+  return {
+    position: mp.com, rotation: [0, 0, 0, 1], chunks: list, mass: mp.mass,
+    inertia: mp.inertia, inertiaFrame: mp.frame, linvel, angvel, groups,
+  };
+}
 
 /**
  * Collider input for chunk i: its cached hull points (chunk-local, Float32) and triangle indices.

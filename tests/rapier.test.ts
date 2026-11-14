@@ -45,12 +45,29 @@ describe('Rapier facts', () => {
     const be = new RapierBackend();
     const a = chunkHull(model, 0), b = chunkHull(model, 0); // same hull twice: full overlap
     const { body } = be.createDynamicIsland({
-      position: [0, 5, 0], rotation: [0, 0, 0, 1], chunks: [a, b], mass: 123, inertia: [1, 2, 3],
+      position: [0, 5, 0], rotation: [0, 0, 0, 1], chunks: [a, b], mass: 123, inertia: [1, 2, 3], inertiaFrame: [0, 0, 0, 1],
       linvel: [0, 0, 0], angvel: [0, 0, 0], groups: ALL,
     });
     be.step(1 / 60);
     expect(activeContacts(be.world)).toBe(0);
     expect(be.world.getRigidBody(body).mass()).toBeCloseTo(123, 3);
+    be.dispose();
+  });
+
+  it('inertiaFrame is honoured: effective world inertia tensor = R diag(I) R^T', () => {
+    const be = new RapierBackend();
+    const s = Math.SQRT1_2; // 90 deg about z: principal x axis -> world y
+    const { body } = be.createDynamicIsland({
+      position: [0, 5, 0], rotation: [0, 0, 0, 1], chunks: [chunkHull(model, 0)], mass: 10, inertia: [1, 2, 3],
+      inertiaFrame: [0, 0, s, s], linvel: [0, 0, 0], angvel: [0, 0, 0], groups: ALL,
+    });
+    const rb = be.world.getRigidBody(body);
+    be.step(1 / 60); // mass properties are only applied by a step
+    // torque impulse about world y hits principal I=1 -> angvel 1; about world x hits I=2 -> 0.5
+    rb.applyTorqueImpulse({ x: 1, y: 1, z: 0 }, true);
+    const w = rb.angvel();
+    expect(w.y).toBeCloseTo(1, 4);
+    expect(w.x).toBeCloseTo(0.5, 4);
     be.dispose();
   });
 
@@ -70,7 +87,7 @@ describe('Rapier facts', () => {
     const ch = chunkHull(model, 0);
     be.createDynamicIsland({
       position: ch.translation, rotation: [0, 0, 0, 1], chunks: [{ ...ch, translation: [0, 0, 0] }],
-      mass: 10, inertia: [1, 1, 1], linvel: [0, 0, 0], angvel: [0, 0, 0], groups: ALL,
+      mass: 10, inertia: [1, 1, 1], inertiaFrame: [0, 0, 0, 1], linvel: [0, 0, 0], angvel: [0, 0, 0], groups: ALL,
     });
     be.step(1 / 60);
     expect(activeContacts(be.world)).toBeGreaterThan(0);
@@ -85,7 +102,7 @@ describe('Rapier facts', () => {
     const ch = chunkHull(model, 0); // overlaps the static chunk exactly
     const island = (groups: number, y: number) => be.createDynamicIsland({
       position: [ch.translation[0], y, ch.translation[2]], rotation: [0, 0, 0, 1], chunks: [{ ...ch, translation: [0, 0, 0] }],
-      mass: 2400, inertia: [400, 400, 400], linvel: [0, 0, 0], angvel: [0, 0, 0], groups,
+      mass: 2400, inertia: [400, 400, 400], inertiaFrame: [0, 0, 0, 1], linvel: [0, 0, 0], angvel: [0, 0, 0], groups,
     });
     const grace = island(packGroups(GroupBit.GRACE, GroupBit.DEBRIS), 0.5);
     be.step(1 / 60);
@@ -98,5 +115,23 @@ describe('Rapier facts', () => {
     expect(events.length).toBeGreaterThan(0);
     expect(events.some((e) => e.chunkA === 0 && e.chunkB === 0 && e.force > 0)).toBe(true);
     be.dispose();
+  });
+
+  it('impact dir points from collider A to B (force on B = +dir F), whichever was created first', () => {
+    const one = generateFromBoxes(gridBoxes({ counts: [1, 1, 1], cell: [1, 1, 1], material: materialId(t, 'concrete') }), t);
+    for (const chunkFirst of [true, false]) {
+      const be = new RapierBackend({ impactThreshold: 1 });
+      const addChunk = () => be.createStaticChunk(be.createStaticBody(), chunkHull(one, 0), ALL);
+      if (chunkFirst) addChunk();
+      be.createSphere(0.2, [3, 0.5, 0.5], [-20, 0, 0], 1000, ALL); // hits the +x face
+      if (!chunkFirst) addChunk();
+      let fx = 0;
+      for (let i = 0; i < 20; i++) {
+        be.step(1 / 60);
+        be.drainImpactEvents((e) => { fx += (e.chunkB === 0 ? 1 : e.chunkA === 0 ? -1 : 0) * e.dir[0] * e.force; });
+      }
+      expect(fx).toBeLessThan(0); // the chunk is pushed towards -x
+      be.dispose();
+    }
   });
 });

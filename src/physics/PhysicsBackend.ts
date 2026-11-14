@@ -21,6 +21,8 @@ export interface IslandDesc {
   /** Mass (kg), principal inertia (kg m^2) about the COM in the body frame (from rest cell volumes, PLAN §3). */
   mass: number;
   inertia: [number, number, number];
+  /** Rotation (quaternion x,y,z,w) of the principal inertia axes in the body frame. */
+  inertiaFrame: [number, number, number, number];
   linvel: [number, number, number];
   angvel: [number, number, number];
   /** Collision group bits (16 membership << 16 | 16 filter), e.g. the grace group for new islands. */
@@ -30,7 +32,10 @@ export interface IslandDesc {
 export interface ImpactEvent {
   chunkA: number; // -1 if the collider is not a chunk
   chunkB: number;
-  /** Total contact force magnitude (N) this step and its world direction (from the strongest contact). */
+  /**
+   * Total contact force magnitude (N) this step and its world direction (from the strongest contact).
+   * `dir` points from A to B: the force on B is +dir * force, on A -dir * force (verified in tests/rapier.test.ts).
+   */
   force: number;
   dir: [number, number, number];
 }

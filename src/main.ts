@@ -1,5 +1,5 @@
-// M1 debug app: generated structure, culled outer/inner render, bond lines, Rapier static colliders, ball drops with impact events.
-// No integrity solver yet (M2/M3): "break random bonds" only exercises the reveal path.
+// Debug app: generated structure, culled outer/inner render, bond lines, Rapier, and the M3 core loop (DestructionSim):
+// impacts -> stress/damage -> breaks -> falling islands. Islands are placed on the CPU (placeChunk) until M4 skinning.
 
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -9,23 +9,26 @@ import { createMaterialTable } from './model/Material';
 import { buildCullBuffers } from './render/cullBuffers';
 import { ChunkMeshes, createChunkMeshes, revealBondFaces } from './render/chunkMesh';
 import { BondLines, createBondLines, updateBondColors } from './render/bondLines';
-import { GroupBit, packGroups } from './physics/PhysicsBackend';
+import { packGroups } from './physics/PhysicsBackend';
 import { RapierBackend, initRapier } from './physics/RapierBackend';
-import { chunkHull } from './physics/fromModel';
+import { DestructionSim } from './sim/DestructionSim';
+import { WorkerIntegrity } from './integrity/IntegrityClient';
+import { placeChunk } from './render/islandPose';
 import { SCENES, SceneName, buildScene } from './scenes';
 
 const FIXED_DT = 1 / 60;
 const ALL = packGroups(0xffff, 0xffff);
-const STRUCTURE = packGroups(GroupBit.STRUCTURE, 0xffff);
 
 /** Everything that belongs to the currently loaded structure. */
 interface Loaded {
   model: ChunkModel;
   meshes: ChunkMeshes;
   bonds: BondLines;
-  ratio: Float32Array;
   broken: Uint8Array;
   physics: RapierBackend;
+  sim: DestructionSim;
+  /** brokenLog entries already revealed/coloured. */
+  shownBroken: number;
   balls: { body: number; mesh: THREE.Mesh }[];
 }
 
@@ -60,7 +63,7 @@ async function main(): Promise<void> {
 
   const table = createMaterialTable();
   const params = { scene: SCENES[0] as SceneName, outer: true, inner: true, bondLines: false, breakCount: 10, ballSpeed: 15, ballRadius: 0.25 };
-  const stats = { chunks: 0, surface: 0, bonds: 0, outerTris: 0, innerTris: 0, impacts: 0, maxImpactN: 0 };
+  const stats = { chunks: 0, surface: 0, bonds: 0, outerTris: 0, innerTris: 0, brokenBonds: 0, islands: 0 };
   let cur: Loaded | null = null;
 
   /** Disposes the current structure and loads the selected scene. */
@@ -70,6 +73,7 @@ async function main(): Promise<void> {
         scene.remove(o);
         o.geometry.dispose();
       }
+      cur.sim.dispose();
       cur.physics.dispose();
     }
     const model = buildScene(params.scene, table);
@@ -77,15 +81,15 @@ async function main(): Promise<void> {
     const bonds = createBondLines(model);
     const physics = new RapierBackend({ impactThreshold: 500 });
     physics.createGround(0, ALL);
-    const structure = physics.createStaticBody();
-    for (let i = 0; i < model.chunkCount; i++) physics.createStaticChunk(structure, chunkHull(model, i), STRUCTURE);
+    const sim = new DestructionSim(model, table, physics, { client: new WorkerIntegrity(model, table) });
+    (meshes.outer.geometry.getAttribute('position') as THREE.BufferAttribute).setUsage(THREE.DynamicDrawUsage);
     scene.add(meshes.outer, meshes.inner, bonds.lines);
-    cur = { model, meshes, bonds, ratio: new Float32Array(model.bondCount), broken: new Uint8Array(model.bondCount), physics, balls: [] };
+    cur = { model, meshes, bonds, broken: new Uint8Array(model.bondCount), physics, sim, shownBroken: 0, balls: [] };
     Object.assign(stats, {
       chunks: model.chunkCount, surface: surfaceChunkCount(model), bonds: model.bondCount,
-      outerTris: meshes.cull.outerIndex.length / 3, innerTris: 0, impacts: 0, maxImpactN: 0,
+      outerTris: meshes.cull.outerIndex.length / 3, innerTris: 0, brokenBonds: 0, islands: 0,
     });
-    updateBondColors(bonds, cur.ratio, cur.broken);
+    updateBondColors(bonds, sim.ratio, cur.broken);
     applyVisibility();
   }
 
@@ -96,16 +100,37 @@ async function main(): Promise<void> {
     cur.bonds.lines.visible = params.bondLines;
   }
 
-  /** Marks random intact bonds broken and reveals their faces (exercises the append-only inner buffer). */
+  /** Scripted removal of random bonds (tier 0 drops whatever loses support; tier 1 handles the overload). */
   function breakRandom(): void {
     if (!cur) return;
-    for (let k = 0; k < params.breakCount; k++) {
-      const b = Math.floor(Math.random() * cur.model.bondCount);
-      cur.broken[b] = 1;
-      revealBondFaces(cur.meshes, b);
+    const bonds = Array.from({ length: params.breakCount }, () => Math.floor(Math.random() * cur!.model.bondCount));
+    cur.sim.removeBonds(bonds);
+  }
+
+  /** Reveals faces of newly broken bonds, places island chunks from body poses, refreshes stats/colours. */
+  function syncRender(l: Loaded): void {
+    const { sim, meshes } = l;
+    let changed = false;
+    for (; l.shownBroken < sim.brokenTotal; l.shownBroken++) {
+      const b = sim.brokenLog[l.shownBroken];
+      l.broken[b] = 1;
+      revealBondFaces(meshes, b);
+      changed = true;
     }
-    stats.innerTris = cur.meshes.cull.innerCount / 3;
-    updateBondColors(cur.bonds, cur.ratio, cur.broken);
+    const posAttr = meshes.outer.geometry.getAttribute('position') as THREE.BufferAttribute;
+    const nrmAttr = meshes.outer.geometry.getAttribute('normal') as THREE.BufferAttribute;
+    for (const isl of sim.handoff.islands) {
+      l.physics.readBodyPoses([isl.body], pose);
+      for (const c of isl.chunks) placeChunk(l.model, c, pose, 0, isl.com, posAttr.array as Float32Array, nrmAttr.array as Float32Array);
+    }
+    if (sim.handoff.islands.length) {
+      posAttr.needsUpdate = true; nrmAttr.needsUpdate = true;
+      for (const m of [meshes.outer, meshes.inner]) m.geometry.computeBoundingSphere();
+    }
+    if (changed || frame % 10 === 0) updateBondColors(l.bonds, sim.ratio, l.broken);
+    stats.innerTris = meshes.cull.innerCount / 3;
+    stats.brokenBonds = sim.brokenTotal;
+    stats.islands = sim.handoff.islands.length;
   }
 
   /** Throws a ball from the camera along the view direction. */
@@ -122,7 +147,7 @@ async function main(): Promise<void> {
     cur.balls.push({ body, mesh });
   }
 
-  const gui = new GUI({ title: 'destruction3d (M1)' });
+  const gui = new GUI({ title: 'destruction3d (M3)' });
   gui.add(params, 'scene', SCENES).onChange(load);
   gui.add(params, 'outer').name('outer faces').onChange(applyVisibility);
   gui.add(params, 'inner').name('inner faces').onChange(applyVisibility);
@@ -143,8 +168,9 @@ async function main(): Promise<void> {
     renderer.setSize(innerWidth, innerHeight);
   });
 
-  load();
   const pose = new Float32Array(7);
+  let frame = 0;
+  load();
   let acc = 0, last = performance.now();
   renderer.setAnimationLoop(() => {
     const now = performance.now();
@@ -153,13 +179,11 @@ async function main(): Promise<void> {
     if (cur) {
       while (acc >= FIXED_DT) {
         cur.physics.step(FIXED_DT);
-        cur.physics.drainImpactEvents((e) => {
-          if (e.chunkA < 0 && e.chunkB < 0) return;
-          stats.impacts++;
-          stats.maxImpactN = Math.max(stats.maxImpactN, Math.round(e.force));
-        });
+        cur.sim.tick(FIXED_DT);
         acc -= FIXED_DT;
       }
+      frame++;
+      syncRender(cur);
       for (const b of cur.balls) {
         cur.physics.readBodyPoses([b.body], pose);
         b.mesh.position.set(pose[0], pose[1], pose[2]);
