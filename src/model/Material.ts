@@ -47,6 +47,34 @@ export const MATERIAL_PRESETS: Material[] = [
   { ...base, name: 'clay', density: 1800, E: 0.05, nu: 0.4, sigmaT: 0.05, sigmaC: 0.2, tauC: 0.05, mu: 0.3, sigmaY: 0.02, H: 0, epsPlasticMax: 0.5, epsElasticMax: 0, damageRate: 1, deform: 'offsets', render: { outer: 0xb5764f, inner: 0x9c623f } },
 ];
 
+/** Global debug multipliers applied to every record (tuning knobs; 1 = preset values). */
+export interface MaterialScale {
+  strength: number; // sigmaT, sigmaC, tauC, sigmaY
+  stiffness: number; // E, H
+  ductility: number; // epsElasticMax, epsPlasticMax
+  damageRate: number;
+  density: number;
+}
+
+export const UNIT_SCALE: MaterialScale = { strength: 1, stiffness: 1, ductility: 1, damageRate: 1, density: 1 };
+
+/**
+ * Copies records with multipliers applied. @param ms records; @param s global scale; @param perStrength optional
+ * extra strength multiplier by material name (tuning only, not a name branch in sim code). @returns new records.
+ */
+export function scaleMaterials(ms: Material[], s: MaterialScale, perStrength: Record<string, number> = {}): Material[] {
+  return ms.map((m) => {
+    const k = s.strength * (perStrength[m.name] ?? 1);
+    return {
+      ...m,
+      sigmaT: m.sigmaT * k, sigmaC: m.sigmaC * k, tauC: m.tauC * k, sigmaY: m.sigmaY * k,
+      E: m.E * s.stiffness, H: m.H * s.stiffness,
+      epsElasticMax: m.epsElasticMax * s.ductility, epsPlasticMax: m.epsPlasticMax * s.ductility,
+      damageRate: m.damageRate * s.damageRate, density: m.density * s.density,
+    };
+  });
+}
+
 /** Lookup table of materials by id (array index) and name. */
 export interface MaterialTable {
   materials: Material[];

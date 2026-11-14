@@ -26,20 +26,22 @@ export function createBondLines(model: ChunkModel): BondLines {
   geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   const colorAttr = new THREE.BufferAttribute(new Float32Array(m * 12), 3).setUsage(THREE.DynamicDrawUsage);
   geo.setAttribute('color', colorAttr);
-  const lines = new THREE.LineSegments(geo, new THREE.LineBasicNodeMaterial({ vertexColors: true, depthTest: false, transparent: true }));
+  const lines = new THREE.LineSegments(geo, new THREE.LineBasicNodeMaterial({ vertexColors: true, depthTest: false, transparent: true, blending: THREE.AdditiveBlending }));
   lines.renderOrder = 10;
   return { lines, colorAttr };
 }
 
 /**
- * Recolours bonds from their failure ratio; broken bonds are drawn black.
- * @param ratio (m,) failure ratio per bond; @param broken (m,) 1 = broken.
+ * Recolours bonds from a per-bond value (failure ratio or damage, 1 = failure). Lines blend additively, so black =
+ * hidden: broken bonds and bonds below `minShow` disappear (declutters dense lattices).
+ * @param ratio (m,) value per bond; @param broken (m,) 1 = broken; @param minShow value below which a bond is hidden.
  */
-export function updateBondColors(bl: BondLines, ratio: ArrayLike<number>, broken: ArrayLike<number>): void {
+export function updateBondColors(bl: BondLines, ratio: ArrayLike<number>, broken: ArrayLike<number>, minShow = 0): void {
   const col = bl.colorAttr.array as Float32Array;
   for (let b = 0; b < ratio.length; b++) {
     const r = Math.min(Math.max(ratio[b], 0), 1);
-    const red = broken[b] ? 0 : Math.min(1, 2 * r), green = broken[b] ? 0 : Math.min(1, 2 - 2 * r);
+    const hide = broken[b] || ratio[b] < minShow;
+    const red = hide ? 0 : Math.min(1, 2 * r), green = hide ? 0 : Math.min(1, 2 - 2 * r);
     for (let v = 0; v < 4; v++) { col[12 * b + 3 * v] = red; col[12 * b + 3 * v + 1] = green; col[12 * b + 3 * v + 2] = 0; }
   }
   bl.colorAttr.needsUpdate = true;

@@ -13,6 +13,9 @@ export interface RapierBackendOptions {
   gravity?: [number, number, number];
   /** Contact-force event threshold (N); below this no impact event is emitted. */
   impactThreshold?: number;
+  /** Rapier velocity solver iterations (default 4) and internal PGS iterations (default 1); higher = stiffer stacks. */
+  solverIterations?: number;
+  pgsIterations?: number;
 }
 
 export class RapierBackend implements PhysicsBackend {
@@ -26,6 +29,8 @@ export class RapierBackend implements PhysicsBackend {
     const g = opts.gravity ?? [0, -9.81, 0];
     this.world = new RAPIER.World({ x: g[0], y: g[1], z: g[2] });
     this.impactThreshold = opts.impactThreshold ?? 1000;
+    if (opts.solverIterations) this.world.numSolverIterations = opts.solverIterations;
+    if (opts.pgsIterations) this.world.numInternalPgsIterations = opts.pgsIterations;
   }
 
   step(dt: number): void {

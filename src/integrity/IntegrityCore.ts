@@ -7,6 +7,7 @@ import type { ChunkModel } from '../model/ChunkModel';
 import type { MaterialTable } from '../model/Material';
 import { BondSolver } from './BondSolver';
 import { StressTier } from './StressTier';
+import { PCG_BNORM2, PCG_RNORM2 } from '../kernels/pcg';
 
 export interface TickRequest {
   type: 'tick';
@@ -34,6 +35,25 @@ export interface TickReply {
   detachedOffset: Uint32Array;
   /** Filtered failure ratio per bond (m,), for display. */
   ratio: Float32Array;
+  /** Damage per bond (m,) in [0, 1], for display. */
+  damage: Float32Array;
+  /** Debug counters for this request. */
+  stats: TickStats;
+}
+
+/** Per-request solver diagnostics (display only). */
+export interface TickStats {
+  /** PCG iterations since the last (re)start, relative residual |r|/|f|, wall time spent in this request (ms). */
+  iters: number;
+  relRes: number;
+  solveMs: number;
+  /** True when this request restarted PCG (new loads or removals). */
+  restarted: boolean;
+  /** Max filtered ratio over live bonds, live bonds, bonds with damage > 0, free dofs. */
+  maxRatio: number;
+  alive: number;
+  damaged: number;
+  dofs: number;
 }
 
 export interface InitRequest {
@@ -44,7 +64,7 @@ export interface InitRequest {
 
 /** Transferable buffers of a reply (for postMessage). */
 export function replyTransfer(r: TickReply): ArrayBuffer[] {
-  return [r.f.buffer, r.broken.buffer, r.detachedChunks.buffer, r.detachedOffset.buffer, r.ratio.buffer] as ArrayBuffer[];
+  return [r.f.buffer, r.broken.buffer, r.detachedChunks.buffer, r.detachedOffset.buffer, r.ratio.buffer, r.damage.buffer] as ArrayBuffer[];
 }
 
 export class IntegrityCore {
@@ -87,7 +107,9 @@ export class IntegrityCore {
     }
     // Continue the running solve while loads and stiffness are unchanged; otherwise restart PCG on the latest loads
     // (warm-started from the current u), so a long solve never hides newer impacts.
-    if (!this.solving || req.remove.length || !sameLoads(req.f, this.solveF)) {
+    const t0 = performance.now();
+    const restarted = !this.solving || req.remove.length > 0 || !sameLoads(req.f, this.solveF);
+    if (restarted) {
       this.solveF.set(req.f);
       this.solver.begin(req.f);
       this.solving = true;
@@ -103,7 +125,22 @@ export class IntegrityCore {
       type: 'result', version: this.version, f: req.f, converged,
       broken: Uint32Array.from(this.brokenAcc), detachedChunks: Uint32Array.from(this.compChunks),
       detachedOffset: Uint32Array.from(this.compOffset), ratio: Float32Array.from(this.tier.ratioFiltered),
+      damage: Float32Array.from(this.solver.damage), stats: this.stats(restarted, performance.now() - t0),
     };
+  }
+
+  /** Gathers display counters (O(m), cheap next to the solve). @param restarted PCG restarted; @param ms request time. */
+  private stats(restarted: boolean, ms: number): TickStats {
+    const s = this.solver, w = s.work.s;
+    let maxRatio = 0, alive = 0, damaged = 0;
+    for (let b = 0; b < s.m; b++) {
+      if (!s.alive[b]) continue;
+      alive++;
+      if (s.damage[b] > 0) damaged++;
+      if (this.tier.ratioFiltered[b] > maxRatio) maxRatio = this.tier.ratioFiltered[b];
+    }
+    const relRes = w[PCG_BNORM2] > 0 ? Math.sqrt(w[PCG_RNORM2] / w[PCG_BNORM2]) : 0;
+    return { iters: s.iterations, relRes, solveMs: ms, restarted, maxRatio, alive, damaged, dofs: 6 * s.nf };
   }
 }
 

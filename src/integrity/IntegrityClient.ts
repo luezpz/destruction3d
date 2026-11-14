@@ -11,11 +11,14 @@ export interface IntegrityClient {
   /** Returns the reply if one arrived since the last poll. */
   poll(): TickReply | null;
   dispose(): void;
+  /** True when request() computes the reply immediately (poll right after request returns it). */
+  readonly sync: boolean;
 }
 
 /** Synchronous client: the reply is ready on the next poll. */
 export class InlineIntegrity implements IntegrityClient {
   readonly core: IntegrityCore;
+  readonly sync = true;
   private reply: TickReply | null = null;
   constructor(model: ChunkModel, table: MaterialTable) { this.core = new IntegrityCore(model, table); }
   request(req: TickRequest): void { this.reply = this.core.tick(req); }
@@ -26,6 +29,7 @@ export class InlineIntegrity implements IntegrityClient {
 /** Worker client: model + table are structured-cloned once at init; tick buffers are transferred both ways. */
 export class WorkerIntegrity implements IntegrityClient {
   private readonly worker: Worker;
+  readonly sync = false;
   private reply: TickReply | null = null;
   constructor(model: ChunkModel, table: MaterialTable) {
     this.worker = new Worker(new URL('./integrity.worker.ts', import.meta.url), { type: 'module' });

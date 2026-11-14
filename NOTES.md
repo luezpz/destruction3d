@@ -12,10 +12,11 @@
 - `integrity/impactLoads.ts` peak contact force per chunk between tier ticks, x2 amplification.
 - `integrity/IntegrityCore.ts` message handler (TickRequest -> TickReply: broken, detached, ratio, version, returned f); `IntegrityClient.ts` (`InlineIntegrity`, `WorkerIntegrity`); `integrity.worker.ts` entry.
 - `sim/` glue between integrity and physics: `IslandHandoff.ts` (static body + per-chunk colliders, detach components -> dynamic islands, grace -> debris groups), `DestructionSim.ts` (per-physics-step `tick`: drain impacts, poll reply -> breaks/handoff, send next request when none in flight; f double-buffered; `brokenLog`, `ratio`, `isStatic` for renderers).
+- `render/stressColors.ts` debug heatmap: chunk colour = max bond ratio/damage.
 - `render/islandPose.ts` CPU rigid placement of island chunk verts (debug until M4).
 - `main.ts` (M3 app): physics.step -> sim.tick per fixed step; `syncRender` reveals broken faces, places islands, recolours bond lines by filtered ratio.
 - `render/` `cullBuffers.ts` (headless outer/inner index buffers, append-only reveal), `chunkMesh.ts` (two meshes sharing one vertex buffer), `bondLines.ts` (debug lines by ratio).
-- `scenes.ts` 11 demo scenes (box lists, mixed materials, `carve` for openings) + per-scene camera; `main.ts` debug app (GUI: scene, visibility, break random bonds, stats; click/space = ball aimed at cursor with gravity lead, shift+click = cut all bonds of the static chunk under the cursor). `window.demo` exposes `cur` (model/sim/physics), `load`, `throwBall` for console/automated checks.
+- `scenes.ts` 11 demo scenes (box lists, mixed materials, `carve` for openings) + per-scene camera; `main.ts` debug app (GUI: scene, visibility, break random bonds, stats; click/space = ball aimed at cursor with gravity lead, shift+click = cut all bonds of the static chunk under the cursor). GUI folders: debug view (chunk/bond colour by ratio|damage, hide bonds below), sim (sync = `InlineIntegrity` applied same step, pause/step, time scale, physics Hz, substeps, solver ms, PCG tol, impact hold; gravity/impact threshold/Rapier iters reload), material multipliers (`scaleMaterials`, global + per-material strength, reload), stats from `TickReply.stats` (PCG iters, residual, request ms, max ratio, damaged bonds, latency). `window.demo` exposes `cur` (model/sim/physics), `load`, `throwBall` for console/automated checks.
 - `tests/` model, culling, Rapier facts, solver (`solver.test.ts`, incl. `[bench]` line: `npx vitest run tests/solver.test.ts -t benchmark --reporter=verbose`).
 
 ## Conventions
@@ -51,6 +52,8 @@
 - `findDetached` reports any component without a support, so only pass bonds of the static structure.
 
 ## Gotchas
+- Rapier `EventQueue(true)` auto-drains on every `world.step`: with substeps, call `sim.tick` after each substep or impacts are lost.
+- Bond lines use additive blending: black = hidden (broken / below threshold).
 - Impacts last one physics step but tier 1 low-passes ratios (~filterTime): `DestructionSim` holds each sent peak (`heldImpacts`) until a converged reply AND age >= `impactHold` (0.05 s). Without this, ball hits never broke anything.
 - `IntegrityCore` must not restart PCG every request: restarted CG with a 2 ms budget stalls on cracked lattices (never converged after the first breaks). It continues while loads are bit-identical and no removals; held impacts keep f identical across requests.
 - Browser check without a user: playwright-core + system Chrome (`--enable-unsafe-webgpu`, headed, off-screen window) drives `npm run dev`; keep the harness outside the repo.

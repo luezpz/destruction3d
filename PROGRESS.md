@@ -56,6 +56,7 @@ Status tracker across sessions. Update at the end of every session. Spec: `PLAN.
 
 ## Session log
 <!-- YYYY-MM-DD: what was done, what's next -->
+- 2026-11-14: Debug UI: structure-sim stats (TickReply.stats + damage), chunk/bond heatmaps, sync/async fracture toggle, sim params (Hz, substeps, budget, tol, hold, gravity, Rapier iters), material multipliers. 87 tests pass, build OK; not browser-verified.
 - 2026-11-14: Demo made to work (browser-verified): impact hold + PCG continuation fixes, cursor-aimed throws, shift+click chunk removal, 7 new scenes (slab on columns, tower, bridge, cantilever balcony, house, brick gate, ice pillars); 85 tests pass, build OK.
 - 2026-11-14: Read PLAN.md, set up agent docs.
 - 2026-11-14: M1 implemented: model, materials, generators, culling, Rapier backend + facts tests (20 passing), debug app. Build OK. Not yet viewed in a browser.

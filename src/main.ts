@@ -5,18 +5,18 @@ import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import GUI from 'lil-gui';
 import { ChunkModel, surfaceChunkCount } from './model/ChunkModel';
-import { createMaterialTable } from './model/Material';
+import { MATERIAL_PRESETS, MaterialScale, UNIT_SCALE, createMaterialTable, scaleMaterials } from './model/Material';
 import { buildCullBuffers } from './render/cullBuffers';
 import { ChunkMeshes, createChunkMeshes, revealBondFaces } from './render/chunkMesh';
 import { BondLines, createBondLines, updateBondColors } from './render/bondLines';
 import { packGroups } from './physics/PhysicsBackend';
 import { RapierBackend, initRapier } from './physics/RapierBackend';
 import { DestructionSim } from './sim/DestructionSim';
-import { WorkerIntegrity } from './integrity/IntegrityClient';
+import { InlineIntegrity, WorkerIntegrity } from './integrity/IntegrityClient';
+import { colorChunksBy } from './render/stressColors';
 import { placeChunk } from './render/islandPose';
 import { SCENES, SceneName, buildScene } from './scenes';
 
-const FIXED_DT = 1 / 60;
 const ALL = packGroups(0xffff, 0xffff);
 
 /** Everything that belongs to the currently loaded structure. */
@@ -30,7 +30,12 @@ interface Loaded {
   /** brokenLog entries already revealed/coloured. */
   shownBroken: number;
   balls: { body: number; mesh: THREE.Mesh }[];
+  /** Original per-vertex chunk colours (restored when the heatmap is off) and per-chunk scratch. */
+  baseColors: Float32Array;
+  chunkScratch: Float32Array;
 }
+
+type ColorBy = 'material' | 'ratio' | 'damage';
 
 async function main(): Promise<void> {
   await initRapier();
@@ -61,9 +66,21 @@ async function main(): Promise<void> {
   ground.receiveShadow = true;
   scene.add(ground);
 
-  const table = createMaterialTable();
-  const params = { scene: SCENES[0] as SceneName, outer: true, inner: true, bondLines: false, breakCount: 10, ballSpeed: 20, ballRadius: 0.25 };
-  const stats = { chunks: 0, surface: 0, bonds: 0, outerTris: 0, innerTris: 0, brokenBonds: 0, islands: 0 };
+  const params = {
+    scene: SCENES[0] as SceneName, outer: true, inner: true, bondLines: false, breakCount: 10, ballSpeed: 20, ballRadius: 0.25,
+    // Debug view
+    colorBy: 'material' as ColorBy, bondColorBy: 'ratio' as Exclude<ColorBy, 'material'>, bondMinShow: 0,
+    // Sim (live unless noted "reload")
+    sync: false, paused: false, timeScale: 1, physicsHz: 60, substeps: 1, budgetMs: 2, tol: 1e-4, impactHold: 0.05,
+    g: 9.81, impactThreshold: 500, solverIterations: 4, pgsIterations: 1, // reload
+  };
+  const matScale: MaterialScale = { ...UNIT_SCALE };
+  const perStrength: Record<string, number> = Object.fromEntries(MATERIAL_PRESETS.map((m) => [m.name, 1]));
+  const stats = {
+    chunks: 0, surface: 0, bonds: 0, outerTris: 0, innerTris: 0, brokenBonds: 0, islands: 0,
+    mode: '', version: 0, pcgIters: 0, relResidual: '', converged: '', requestMs: '', simTickMs: '', replies: 0,
+    convergedPct: 0, latencySteps: 0, maxRatio: '', liveBonds: 0, damagedBonds: 0, heldImpacts: 0, dofs: 0,
+  };
   let cur: Loaded | null = null;
 
   /** Disposes the current structure and loads the selected scene. */
@@ -76,6 +93,7 @@ async function main(): Promise<void> {
       cur.sim.dispose();
       cur.physics.dispose();
     }
+    const table = createMaterialTable(scaleMaterials(MATERIAL_PRESETS, matScale, perStrength));
     const demo = buildScene(params.scene, table);
     const model = demo.model;
     camera.position.set(...demo.camera);
@@ -83,19 +101,43 @@ async function main(): Promise<void> {
     controls.update();
     const meshes = createChunkMeshes(model, table, buildCullBuffers(model));
     const bonds = createBondLines(model);
-    const physics = new RapierBackend({ impactThreshold: 500 });
+    const physics = new RapierBackend({
+      gravity: [0, -params.g, 0], impactThreshold: params.impactThreshold,
+      solverIterations: params.solverIterations, pgsIterations: params.pgsIterations,
+    });
     physics.createGround(0, ALL);
-    const sim = new DestructionSim(model, table, physics, { client: new WorkerIntegrity(model, table) });
+    const client = params.sync ? new InlineIntegrity(model, table) : new WorkerIntegrity(model, table);
+    const sim = new DestructionSim(model, table, physics, { client, g: params.g, budgetMs: params.budgetMs, tol: params.tol, impactHold: params.impactHold });
     (meshes.outer.geometry.getAttribute('position') as THREE.BufferAttribute).setUsage(THREE.DynamicDrawUsage);
     scene.add(meshes.outer, meshes.inner, bonds.lines);
-    cur = { model, meshes, bonds, broken: new Uint8Array(model.bondCount), physics, sim, shownBroken: 0, balls: [] };
+    const baseColors = Float32Array.from(meshes.outer.geometry.getAttribute('color').array as Float32Array);
+    cur = { model, meshes, bonds, broken: new Uint8Array(model.bondCount), physics, sim, shownBroken: 0, balls: [], baseColors, chunkScratch: new Float32Array(model.chunkCount) };
+    stats.mode = params.sync ? 'sync (inline)' : 'async (worker)';
     Object.assign(stats, {
       chunks: model.chunkCount, surface: surfaceChunkCount(model), bonds: model.bondCount,
       outerTris: meshes.cull.outerIndex.length / 3, innerTris: 0, brokenBonds: 0, islands: 0,
     });
-    updateBondColors(bonds, sim.ratio, cur.broken);
+    refreshColors(cur);
     applyVisibility();
   }
+
+  /** Pushes live-editable sim params into the current sim. */
+  function applySimParams(): void {
+    if (!cur) return;
+    Object.assign(cur.sim, { budgetMs: params.budgetMs, tol: params.tol, impactHold: params.impactHold });
+  }
+
+  /** Recolours bond lines and the chunk heatmap from the latest ratio/damage. */
+  function refreshColors(l: Loaded): void {
+    const bondVal = params.bondColorBy === 'damage' ? l.sim.damage : l.sim.ratio;
+    updateBondColors(l.bonds, bondVal, l.broken, params.bondMinShow);
+    const chunkVal = params.colorBy === 'ratio' ? l.sim.ratio : params.colorBy === 'damage' ? l.sim.damage : null;
+    if (chunkVal || lastColorBy !== params.colorBy) {
+      colorChunksBy(l.model, l.meshes.outer.geometry.getAttribute('color') as THREE.BufferAttribute, l.baseColors, chunkVal, l.chunkScratch);
+    }
+    lastColorBy = params.colorBy;
+  }
+  let lastColorBy: ColorBy = 'material';
 
   function applyVisibility(): void {
     if (!cur) return;
@@ -131,10 +173,20 @@ async function main(): Promise<void> {
       posAttr.needsUpdate = true; nrmAttr.needsUpdate = true;
       for (const m of [meshes.outer, meshes.inner]) m.geometry.computeBoundingSphere();
     }
-    if (changed || frame % 10 === 0) updateBondColors(l.bonds, sim.ratio, l.broken);
+    if (changed || frame % 10 === 0) refreshColors(l);
     stats.innerTris = meshes.cull.innerCount / 3;
     stats.brokenBonds = sim.brokenTotal;
     stats.islands = sim.handoff.islands.length;
+    const st = sim.lastStats;
+    if (st) {
+      Object.assign(stats, {
+        version: sim.version, pcgIters: st.iters, relResidual: st.relRes.toExponential(2),
+        converged: st.relRes <= sim.tol ? 'yes' : `no${st.restarted ? ' (restarted)' : ''}`,
+        requestMs: st.solveMs.toFixed(2), replies: sim.replies, convergedPct: Math.round((100 * sim.convergedReplies) / sim.replies),
+        latencySteps: sim.replyLatencySteps, maxRatio: st.maxRatio.toFixed(3), liveBonds: st.alive, damagedBonds: st.damaged,
+        heldImpacts: sim.heldChunks, dofs: st.dofs,
+      });
+    }
   }
 
   const raycaster = new THREE.Raycaster();
@@ -189,17 +241,49 @@ async function main(): Promise<void> {
 
   const gui = new GUI({ title: 'destruction3d (M3)' });
   gui.add(params, 'scene', SCENES).onChange(load);
-  gui.add(params, 'outer').name('outer faces').onChange(applyVisibility);
-  gui.add(params, 'inner').name('inner faces').onChange(applyVisibility);
-  gui.add(params, 'bondLines').name('bond lines').onChange(applyVisibility);
-  gui.add(params, 'breakCount', 1, 200, 1);
-  gui.add({ breakRandom }, 'breakRandom').name('break random bonds');
-  gui.add(params, 'ballSpeed', 1, 60);
-  gui.add(params, 'ballRadius', 0.05, 1);
-  gui.add({ throwBall }, 'throwBall').name('throw ball (click / space)');
-  gui.add({ hint: 'shift+click: remove chunk' }, 'hint').name('tip').disable();
-  gui.add({ reset: load }, 'reset');
-  const sf = gui.addFolder('stats');
+  const vf = gui.addFolder('debug view');
+  vf.add(params, 'outer').name('outer faces').onChange(applyVisibility);
+  vf.add(params, 'inner').name('inner faces').onChange(applyVisibility);
+  vf.add(params, 'colorBy', ['material', 'ratio', 'damage']).name('chunk colour').onChange(() => cur && refreshColors(cur));
+  vf.add(params, 'bondLines').name('bond lines').onChange(applyVisibility);
+  vf.add(params, 'bondColorBy', ['ratio', 'damage']).name('bond colour').onChange(() => cur && refreshColors(cur));
+  vf.add(params, 'bondMinShow', 0, 1, 0.01).name('hide bonds below').onChange(() => cur && refreshColors(cur));
+
+  const simf = gui.addFolder('sim');
+  simf.add(params, 'sync').name('sync fracture (inline)').onChange(load);
+  simf.add(params, 'paused');
+  simf.add({ step: () => { if (cur) stepOnce(cur); } }, 'step').name('step once (paused)');
+  simf.add(params, 'timeScale', 0.05, 2, 0.05).name('time scale');
+  simf.add(params, 'physicsHz', 30, 240, 10).name('physics Hz');
+  simf.add(params, 'substeps', 1, 8, 1);
+  simf.add(params, 'budgetMs', 0.25, 50, 0.25).name('solver ms / request').onChange(applySimParams);
+  simf.add(params, 'tol', 1e-8, 1e-2).name('PCG tol').onChange(applySimParams);
+  simf.add(params, 'impactHold', 0, 0.5, 0.01).name('impact hold s').onChange(applySimParams);
+  const rf = simf.addFolder('reload on change');
+  rf.add(params, 'g', 0, 30, 0.01).name('gravity').onFinishChange(load);
+  rf.add(params, 'impactThreshold', 0, 20000, 50).name('impact threshold N').onFinishChange(load);
+  rf.add(params, 'solverIterations', 1, 32, 1).name('rapier solver iters').onFinishChange(load);
+  rf.add(params, 'pgsIterations', 1, 8, 1).name('rapier PGS iters').onFinishChange(load);
+
+  const mf = gui.addFolder('material multipliers (reload)');
+  mf.add(matScale, 'strength', 0.1, 100).onFinishChange(load);
+  mf.add(matScale, 'stiffness', 0.1, 10).onFinishChange(load);
+  mf.add(matScale, 'ductility', 0.1, 10).name('break strain').onFinishChange(load);
+  mf.add(matScale, 'damageRate', 0.01, 10).name('damage rate').onFinishChange(load);
+  mf.add(matScale, 'density', 0.1, 10).onFinishChange(load);
+  const pm = mf.addFolder('strength per material').close();
+  for (const name of Object.keys(perStrength)) pm.add(perStrength, name, 0.1, 100).onFinishChange(load);
+  mf.add({ reset: () => { Object.assign(matScale, UNIT_SCALE); for (const k in perStrength) perStrength[k] = 1; mf.controllersRecursive().forEach((c) => c.updateDisplay()); load(); } }, 'reset').name('reset multipliers');
+
+  const af = gui.addFolder('actions');
+  af.add(params, 'breakCount', 1, 200, 1);
+  af.add({ breakRandom }, 'breakRandom').name('break random bonds');
+  af.add(params, 'ballSpeed', 1, 60);
+  af.add(params, 'ballRadius', 0.05, 1);
+  af.add({ throwBall }, 'throwBall').name('throw ball (click / space)');
+  af.add({ hint: 'shift+click: remove chunk' }, 'hint').name('tip').disable();
+  af.add({ reset: load }, 'reset');
+  const sf = gui.addFolder('stats (structure sim)');
   for (const k of Object.keys(stats) as (keyof typeof stats)[]) sf.add(stats, k).disable().listen();
 
   // Pointer: track for aiming; a click (no drag) throws, shift+click removes the chunk under the cursor.
@@ -223,20 +307,28 @@ async function main(): Promise<void> {
   // Debug handle for automated browser checks (console: demo.cur.sim.brokenTotal, ...).
   (window as unknown as { demo: unknown }).demo = { get cur() { return cur; }, params, stats, load, throwBall, breakRandom, removePickedChunk, ndc };
 
+  /** One fixed step: `substeps` physics + integrity ticks of dt/substeps (Rapier auto-drains events per step). */
+  function stepOnce(l: Loaded): void {
+    const h = 1 / params.physicsHz / params.substeps;
+    const t0 = performance.now();
+    for (let k = 0; k < params.substeps; k++) { l.physics.step(h); l.sim.tick(h); }
+    simMs += performance.now() - t0;
+  }
+  let simMs = 0;
+
   const pose = new Float32Array(7);
   let frame = 0;
   load();
   let acc = 0, last = performance.now();
   renderer.setAnimationLoop(() => {
     const now = performance.now();
-    acc = Math.min(acc + (now - last) / 1000, 0.1); // clamp: never spiral after a stall
+    acc = params.paused ? 0 : Math.min(acc + params.timeScale * (now - last) / 1000, 0.1); // clamp: never spiral after a stall
     last = now;
     if (cur) {
-      while (acc >= FIXED_DT) {
-        cur.physics.step(FIXED_DT);
-        cur.sim.tick(FIXED_DT);
-        acc -= FIXED_DT;
-      }
+      const dt = 1 / params.physicsHz;
+      simMs = 0;
+      while (acc >= dt) { stepOnce(cur); acc -= dt; }
+      stats.simTickMs = simMs.toFixed(2);
       frame++;
       syncRender(cur);
       for (const b of cur.balls) {

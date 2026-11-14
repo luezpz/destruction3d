@@ -7,7 +7,7 @@ import { MaterialTable } from '../model/Material';
 import { ImpactLoads } from '../integrity/impactLoads';
 import { chunkMasses, gravityLoads } from '../integrity/loads';
 import { InlineIntegrity, IntegrityClient } from '../integrity/IntegrityClient';
-import { TickReply } from '../integrity/IntegrityCore';
+import { TickReply, TickStats } from '../integrity/IntegrityCore';
 import { PhysicsBackend } from '../physics/PhysicsBackend';
 import { IslandHandoff } from './IslandHandoff';
 
@@ -35,6 +35,15 @@ export class DestructionSim {
   /** Latest filtered failure ratio per bond (m,) and graph version from integrity. */
   ratio: Float32Array;
   version = 0;
+  /** Latest damage per bond (m,) in [0, 1] and solver diagnostics of the last reply (null before the first). */
+  damage: Float32Array;
+  lastStats: TickStats | null = null;
+  /** Debug counters: replies applied, converged replies, physics steps the last reply took, chunks with held impacts. */
+  replies = 0;
+  convergedReplies = 0;
+  replyLatencySteps = 0;
+  heldChunks = 0;
+  private stepsInFlight = 0;
   /** Per chunk (n,): 1 while part of the static structure (impacts only load these). */
   readonly isStatic: Uint8Array;
   private readonly gravity: Float64Array;
@@ -42,9 +51,10 @@ export class DestructionSim {
   private inFlight = false;
   private pendingDt = 0;
   private pendingRemove: number[] = [];
-  private readonly budgetMs: number;
-  private readonly tol: number;
-  private readonly impactHold: number;
+  /** Tunables (live-editable): solver ms per request, PCG tolerance, impact hold (s). */
+  budgetMs: number;
+  tol: number;
+  impactHold: number;
 
   constructor(readonly model: ChunkModel, table: MaterialTable, private readonly physics: PhysicsBackend, o: SimOptions = {}) {
     this.client = o.client ?? new InlineIntegrity(model, table);
@@ -53,6 +63,7 @@ export class DestructionSim {
     this.handoff = new IslandHandoff(model, table, physics);
     this.brokenLog = new Uint32Array(model.bondCount);
     this.ratio = new Float32Array(model.bondCount);
+    this.damage = new Float32Array(model.bondCount);
     this.isStatic = new Uint8Array(model.chunkCount).fill(1);
     this.gravity = new Float64Array(6 * model.chunkCount);
     gravityLoads(chunkMasses(model, table), o.g ?? 9.81, this.gravity);
@@ -71,9 +82,15 @@ export class DestructionSim {
     this.handoff.update(dt);
     this.heldImpacts.advance(dt);
     this.pendingDt += dt;
+    this.stepsInFlight++;
     const reply = this.client.poll();
-    const broke = reply ? this.apply(reply) : 0;
-    if (!this.inFlight) this.send();
+    let broke = reply ? this.apply(reply) : 0;
+    if (!this.inFlight) {
+      this.send();
+      // Synchronous clients answer inside request(): apply now so breaks land in the same step (no 1-step latency).
+      const now = this.client.sync ? this.client.poll() : null;
+      if (now) broke += this.apply(now);
+    }
     return broke;
   }
 
@@ -87,12 +104,13 @@ export class DestructionSim {
     this.spare = null;
     f.set(this.gravity);
     this.impacts.moveInto(this.heldImpacts);
-    this.heldImpacts.apply(f);
+    this.heldChunks = this.heldImpacts.apply(f);
     const remove = Uint32Array.from(this.pendingRemove);
     this.pendingRemove.length = 0;
     this.client.request({ type: 'tick', dt: this.pendingDt, f, remove, budgetMs: this.budgetMs, tol: this.tol });
     this.pendingDt = 0;
     this.inFlight = true;
+    this.stepsInFlight = 0;
   }
 
   /** Applies a reply: logs breaks, hands detached components to physics. @returns bonds broken. */
@@ -101,6 +119,11 @@ export class DestructionSim {
     if (r.converged) this.heldImpacts.dropOlderThan(this.impactHold);
     this.spare = r.f;
     this.ratio = r.ratio;
+    this.damage = r.damage;
+    this.lastStats = r.stats;
+    this.replies++;
+    if (r.converged) this.convergedReplies++;
+    this.replyLatencySteps = this.stepsInFlight;
     this.version = r.version;
     for (let k = 0; k < r.broken.length; k++) this.brokenLog[this.brokenTotal++] = r.broken[k];
     const comps = r.detachedOffset.length - 1;

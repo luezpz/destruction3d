@@ -53,6 +53,7 @@ describe('IntegrityCore', () => {
 /** Client that holds replies until `deliver()`: simulates a slow worker. */
 class DelayedClient implements IntegrityClient {
   readonly requests: TickRequest[] = [];
+  readonly sync = false;
   private ready: TickReply | null = null;
   constructor(private readonly core: IntegrityCore) {}
   request(r: TickRequest): void { this.requests.push(r); }
