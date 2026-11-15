@@ -20,7 +20,7 @@ Real-time structural destruction layer on top of Rapier (rigid bodies) + three.j
 - **Kernels** (`kernels/`): pure functions over typed arrays, SoA, no classes in hot loops, **no allocation per call**, signature `(views, offsets, counts) -> void`. Must run unchanged in main, worker, or WASM.
 - **Precision**: Float64 in the solver; Float32 only at the Rapier/GPU boundary. Keep poses relative to the structure/island origin.
 - **Units**: SI, except E/H in GPa and strengths/stresses in MPa; convert to Pa inside kernels only.
-- **Data-driven materials**: never branch on material names ("concrete", "steel"). Branch on record fields (`sigmaY`, `deform`, `hull`, ...). New material = new record + row in the material matrix test.
+- **Data-driven materials**: never branch on material names ("concrete", "steel"). Branch on record fields (`sigmaY`, `deform`, `hull`, ...). New material = new record (+ row in the material matrix test once it returns with the external solver, PLAN M3b).
 - **Frame never waits** on destruction work: main thread does bounded, capped work; heavy work is budgeted queues or workers. Results carry a graph version; breaks beat stale data.
 - Worker messaging: transferable double buffers; no SharedArrayBuffer (unless the `SharedState` upgrade is explicitly started).
 - Measure before optimizing; AssemblyScript ports only with a differential test + benchmark recorded in `NOTES.md`.
@@ -36,4 +36,4 @@ Real-time structural destruction layer on top of Rapier (rigid bodies) + three.j
 Each milestone's tests are listed in PLAN.md "Milestones" and per-section "Tests:" lines — they are acceptance criteria.
 
 ## Known risks to keep in mind (PLAN "Risks")
-PCG convergence on stiff lattices; joint-chain stability (4b); no P-delta buckling; Rapier JS API details unverified (convexMesh, setShape, contact-force events, re-parenting, 6-axis motors) — verify against the installed version and record results in `NOTES.md`.
+External structure solver integration (PLAN §2 contract); joint-chain stability (4b); no P-delta buckling; Rapier JS API details unverified (convexMesh, setShape, contact-force events, re-parenting, 6-axis motors) — verify against the installed version and record results in `NOTES.md`.

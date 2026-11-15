@@ -2,9 +2,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { createMaterialTable, materialId } from '../src/model/Material';
 import { Box, generateFromBoxes } from '../src/model/boxGenerator';
-import { BondSolver } from '../src/integrity/BondSolver';
-import { StressTier } from '../src/integrity/StressTier';
-import { chunkMasses, gravityLoads } from '../src/integrity/loads';
+import { StructureGraph } from '../src/integrity/StructureGraph';
 import { RapierBackend, initRapier } from '../src/physics/RapierBackend';
 import { packGroups } from '../src/physics/PhysicsBackend';
 import { IslandHandoff } from '../src/sim/IslandHandoff';
@@ -23,7 +21,7 @@ function portal() {
 
 describe('island handoff', () => {
   it('cutting the columns drops the slab as one body with exact mass; it lands on the column stubs', () => {
-    const m = portal(), s = new BondSolver(m, table), t = new StressTier(m, table, s);
+    const m = portal(), t = new StructureGraph(m);
     const physics = new RapierBackend();
     physics.createGround(0, packGroups(0xffff, 0xffff));
     const h = new IslandHandoff(m, table, physics);
@@ -44,11 +42,6 @@ describe('island handoff', () => {
     const y = rb.translation().y;
     expect(y).toBeLessThan(2.51);
     expect(y).toBeGreaterThan(2.45);
-    // static solve still converges with the detached chunks inactive
-    const f = new Float64Array(6 * m.chunkCount);
-    gravityLoads(chunkMasses(m, table), 9.81, f);
-    s.begin(f);
-    expect(s.iterate(1000, 1e-8)).toBe(true);
     physics.dispose();
   });
 });

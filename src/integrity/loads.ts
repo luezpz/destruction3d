@@ -16,11 +16,3 @@ export function chunkRotInertia(model: ChunkModel, mass: Float64Array): Float64A
   for (let i = 0; i < model.chunkCount; i++) out[i] = (mass[i] * Math.cbrt(model.chunkVolume[i]) ** 2) / 6;
   return out;
 }
-
-/** Writes gravity loads into f (6n,): force m_i g along -y (g in m/s^2), zero moments. */
-export function gravityLoads(mass: Float64Array, g: number, f: Float64Array): void {
-  for (let i = 0; i < mass.length; i++) {
-    const o = 6 * i;
-    f[o] = 0; f[o + 1] = -mass[i] * g; f[o + 2] = 0; f[o + 3] = 0; f[o + 4] = 0; f[o + 5] = 0;
-  }
-}

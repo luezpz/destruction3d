@@ -3,7 +3,7 @@
 // grounded chunk) is reached. Cost is O(size of the detached part) when a piece falls, small when it does not.
 // Setup allocates; queries do not.
 
-import { BondAdjacency } from '../kernels/damage';
+import { BondAdjacency } from '../kernels/bondAdjacency';
 
 export class Connectivity {
   /** Per chunk: 1 = support. */

@@ -1,5 +1,5 @@
 // Debug app: generated structure, culled outer/inner render, bond lines, Rapier, and the M3 core loop (DestructionSim):
-// impacts -> stress/damage -> breaks -> falling islands. Islands are placed on the CPU (placeChunk) until M4 skinning.
+// scripted bond removals -> connectivity -> falling islands (no structure solver yet). Islands are placed on the CPU (placeChunk) until M4 skinning.
 
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -13,7 +13,6 @@ import { packGroups } from './physics/PhysicsBackend';
 import { RapierBackend, initRapier } from './physics/RapierBackend';
 import { DestructionSim } from './sim/DestructionSim';
 import { InlineIntegrity, WorkerIntegrity } from './integrity/IntegrityClient';
-import { colorChunksBy } from './render/stressColors';
 import { placeChunk } from './render/islandPose';
 import { SCENES, SceneName, buildScene } from './scenes';
 
@@ -30,12 +29,7 @@ interface Loaded {
   /** brokenLog entries already revealed/coloured. */
   shownBroken: number;
   balls: { body: number; mesh: THREE.Mesh }[];
-  /** Original per-vertex chunk colours (restored when the heatmap is off) and per-chunk scratch. */
-  baseColors: Float32Array;
-  chunkScratch: Float32Array;
 }
-
-type ColorBy = 'material' | 'ratio' | 'damage';
 
 async function main(): Promise<void> {
   await initRapier();
@@ -68,18 +62,15 @@ async function main(): Promise<void> {
 
   const params = {
     scene: SCENES[0] as SceneName, outer: true, inner: true, bondLines: false, breakCount: 10, ballSpeed: 20, ballRadius: 0.25,
-    // Debug view
-    colorBy: 'material' as ColorBy, bondColorBy: 'ratio' as Exclude<ColorBy, 'material'>, bondMinShow: 0,
     // Sim (live unless noted "reload")
-    sync: false, paused: false, timeScale: 1, physicsHz: 60, substeps: 1, budgetMs: 2, tol: 1e-4, impactHold: 0.05,
+    sync: false, paused: false, timeScale: 1, physicsHz: 60, substeps: 1,
     g: 9.81, impactThreshold: 500, solverIterations: 4, pgsIterations: 1, // reload
   };
   const matScale: MaterialScale = { ...UNIT_SCALE };
   const perStrength: Record<string, number> = Object.fromEntries(MATERIAL_PRESETS.map((m) => [m.name, 1]));
   const stats = {
     chunks: 0, surface: 0, bonds: 0, outerTris: 0, innerTris: 0, brokenBonds: 0, islands: 0,
-    mode: '', version: 0, pcgIters: 0, relResidual: '', converged: '', requestMs: '', simTickMs: '', replies: 0,
-    convergedPct: 0, latencySteps: 0, maxRatio: '', liveBonds: 0, damagedBonds: 0, heldImpacts: 0, dofs: 0,
+    mode: '', version: 0, simTickMs: '', replies: 0, latencySteps: 0,
   };
   let cur: Loaded | null = null;
 
@@ -107,11 +98,10 @@ async function main(): Promise<void> {
     });
     physics.createGround(0, ALL);
     const client = params.sync ? new InlineIntegrity(model, table) : new WorkerIntegrity(model, table);
-    const sim = new DestructionSim(model, table, physics, { client, g: params.g, budgetMs: params.budgetMs, tol: params.tol, impactHold: params.impactHold });
+    const sim = new DestructionSim(model, table, physics, { client });
     (meshes.outer.geometry.getAttribute('position') as THREE.BufferAttribute).setUsage(THREE.DynamicDrawUsage);
     scene.add(meshes.outer, meshes.inner, bonds.lines);
-    const baseColors = Float32Array.from(meshes.outer.geometry.getAttribute('color').array as Float32Array);
-    cur = { model, meshes, bonds, broken: new Uint8Array(model.bondCount), physics, sim, shownBroken: 0, balls: [], baseColors, chunkScratch: new Float32Array(model.chunkCount) };
+    cur = { model, meshes, bonds, broken: new Uint8Array(model.bondCount), physics, sim, shownBroken: 0, balls: [] };
     stats.mode = params.sync ? 'sync (inline)' : 'async (worker)';
     Object.assign(stats, {
       chunks: model.chunkCount, surface: surfaceChunkCount(model), bonds: model.bondCount,
@@ -121,23 +111,10 @@ async function main(): Promise<void> {
     applyVisibility();
   }
 
-  /** Pushes live-editable sim params into the current sim. */
-  function applySimParams(): void {
-    if (!cur) return;
-    Object.assign(cur.sim, { budgetMs: params.budgetMs, tol: params.tol, impactHold: params.impactHold });
-  }
-
-  /** Recolours bond lines and the chunk heatmap from the latest ratio/damage. */
+  /** Recolours bond lines from the broken flags. */
   function refreshColors(l: Loaded): void {
-    const bondVal = params.bondColorBy === 'damage' ? l.sim.damage : l.sim.ratio;
-    updateBondColors(l.bonds, bondVal, l.broken, params.bondMinShow);
-    const chunkVal = params.colorBy === 'ratio' ? l.sim.ratio : params.colorBy === 'damage' ? l.sim.damage : null;
-    if (chunkVal || lastColorBy !== params.colorBy) {
-      colorChunksBy(l.model, l.meshes.outer.geometry.getAttribute('color') as THREE.BufferAttribute, l.baseColors, chunkVal, l.chunkScratch);
-    }
-    lastColorBy = params.colorBy;
+    updateBondColors(l.bonds, l.broken);
   }
-  let lastColorBy: ColorBy = 'material';
 
   function applyVisibility(): void {
     if (!cur) return;
@@ -146,7 +123,7 @@ async function main(): Promise<void> {
     cur.bonds.lines.visible = params.bondLines;
   }
 
-  /** Scripted removal of random bonds (tier 0 drops whatever loses support; tier 1 handles the overload). */
+  /** Scripted removal of random bonds (tier 0 drops whatever loses support). */
   function breakRandom(): void {
     if (!cur) return;
     const bonds = Array.from({ length: params.breakCount }, () => Math.floor(Math.random() * cur!.model.bondCount));
@@ -173,20 +150,11 @@ async function main(): Promise<void> {
       posAttr.needsUpdate = true; nrmAttr.needsUpdate = true;
       for (const m of [meshes.outer, meshes.inner]) m.geometry.computeBoundingSphere();
     }
-    if (changed || frame % 10 === 0) refreshColors(l);
+    if (changed) refreshColors(l);
     stats.innerTris = meshes.cull.innerCount / 3;
     stats.brokenBonds = sim.brokenTotal;
     stats.islands = sim.handoff.islands.length;
-    const st = sim.lastStats;
-    if (st) {
-      Object.assign(stats, {
-        version: sim.version, pcgIters: st.iters, relResidual: st.relRes.toExponential(2),
-        converged: st.relRes <= sim.tol ? 'yes' : `no${st.restarted ? ' (restarted)' : ''}`,
-        requestMs: st.solveMs.toFixed(2), replies: sim.replies, convergedPct: Math.round((100 * sim.convergedReplies) / sim.replies),
-        latencySteps: sim.replyLatencySteps, maxRatio: st.maxRatio.toFixed(3), liveBonds: st.alive, damagedBonds: st.damaged,
-        heldImpacts: sim.heldChunks, dofs: st.dofs,
-      });
-    }
+    Object.assign(stats, { version: sim.version, replies: sim.replies, latencySteps: sim.replyLatencySteps });
   }
 
   const raycaster = new THREE.Raycaster();
@@ -213,7 +181,7 @@ async function main(): Promise<void> {
     return -1;
   }
 
-  /** Scripted removal of every bond of the picked chunk (it drops; dependents follow via tier 0/1). */
+  /** Scripted removal of every bond of the picked chunk (it drops; dependents follow via tier 0). */
   function removePickedChunk(): void {
     const c = pickStaticChunk();
     if (c < 0 || !cur) return;
@@ -239,15 +207,12 @@ async function main(): Promise<void> {
     cur.balls.push({ body, mesh });
   }
 
-  const gui = new GUI({ title: 'destruction3d (M3)' });
+  const gui = new GUI({ title: 'destruction3d' });
   gui.add(params, 'scene', SCENES).onChange(load);
   const vf = gui.addFolder('debug view');
   vf.add(params, 'outer').name('outer faces').onChange(applyVisibility);
   vf.add(params, 'inner').name('inner faces').onChange(applyVisibility);
-  vf.add(params, 'colorBy', ['material', 'ratio', 'damage']).name('chunk colour').onChange(() => cur && refreshColors(cur));
   vf.add(params, 'bondLines').name('bond lines').onChange(applyVisibility);
-  vf.add(params, 'bondColorBy', ['ratio', 'damage']).name('bond colour').onChange(() => cur && refreshColors(cur));
-  vf.add(params, 'bondMinShow', 0, 1, 0.01).name('hide bonds below').onChange(() => cur && refreshColors(cur));
 
   const simf = gui.addFolder('sim');
   simf.add(params, 'sync').name('sync fracture (inline)').onChange(load);
@@ -256,9 +221,6 @@ async function main(): Promise<void> {
   simf.add(params, 'timeScale', 0.05, 2, 0.05).name('time scale');
   simf.add(params, 'physicsHz', 30, 240, 10).name('physics Hz');
   simf.add(params, 'substeps', 1, 8, 1);
-  simf.add(params, 'budgetMs', 0.25, 50, 0.25).name('solver ms / request').onChange(applySimParams);
-  simf.add(params, 'tol', 1e-8, 1e-2).name('PCG tol').onChange(applySimParams);
-  simf.add(params, 'impactHold', 0, 0.5, 0.01).name('impact hold s').onChange(applySimParams);
   const rf = simf.addFolder('reload on change');
   rf.add(params, 'g', 0, 30, 0.01).name('gravity').onFinishChange(load);
   rf.add(params, 'impactThreshold', 0, 20000, 50).name('impact threshold N').onFinishChange(load);
@@ -283,7 +245,7 @@ async function main(): Promise<void> {
   af.add({ throwBall }, 'throwBall').name('throw ball (click / space)');
   af.add({ hint: 'shift+click: remove chunk' }, 'hint').name('tip').disable();
   af.add({ reset: load }, 'reset');
-  const sf = gui.addFolder('stats (structure sim)');
+  const sf = gui.addFolder('stats');
   for (const k of Object.keys(stats) as (keyof typeof stats)[]) sf.add(stats, k).disable().listen();
 
   // Pointer: track for aiming; a click (no drag) throws, shift+click removes the chunk under the cursor.
@@ -317,7 +279,6 @@ async function main(): Promise<void> {
   let simMs = 0;
 
   const pose = new Float32Array(7);
-  let frame = 0;
   load();
   let acc = 0, last = performance.now();
   renderer.setAnimationLoop(() => {
@@ -329,7 +290,6 @@ async function main(): Promise<void> {
       simMs = 0;
       while (acc >= dt) { stepOnce(cur); acc -= dt; }
       stats.simTickMs = simMs.toFixed(2);
-      frame++;
       syncRender(cur);
       for (const b of cur.balls) {
         cur.physics.readBodyPoses([b.body], pose);

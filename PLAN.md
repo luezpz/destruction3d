@@ -10,15 +10,15 @@ Out of scope for now: audio, dust/debris particles, save/load, networking, terra
 ## Setup (M1)
 
 Vite + TypeScript + three.js (WebGPU/TSL) + lil-gui + Rapier, own `index.html`. Layout: `model/` (ChunkModel, Material table, generators), `kernels/` (pure typed-array math),
-`integrity/` (solver, damage, connectivity, worker entry), `physics/` (PhysicsBackend + Rapier impl), `render/` (skin shader, culling buffers), `tests/` (headless, no three.js/Rapier where possible).
+`integrity/` (structure graph, connectivity, worker entry; external structure solver plugs in here), `physics/` (PhysicsBackend + Rapier impl), `render/` (skin shader, culling buffers), `tests/` (headless, no three.js/Rapier where possible).
 Scripts: `dev`, `typecheck`, `test`, `build`. Keep a terse `NOTES.md` (architecture map, commands, decisions, gotchas) updated with each change. Units: SI, except E in GPa and strengths/stresses in MPa (converted to Pa inside kernels).
 
 ## Data flow
 
 ```
 main thread                                   Worker (integrity)
-Rapier: static chunk colliders + debris  --impact loads, removed bonds-->  BondSolver (static solve, damage)
-        ^                                                                    Connectivity (components)
+Rapier: static chunk colliders + debris  --impact loads, removed bonds-->  [external structure solver] -> bonds to break
+        ^                                                                    StructureGraph + Connectivity (components)
         | create/remove colliders, refit shapes                              |
         +---- islands, broken bonds, chunk poses (static graph + offsets) <--+
 renderer: pose DataTexture + many-bone skinning shader
@@ -41,33 +41,26 @@ Float64 in the solver, Float32 only at the Rapier/GPU boundary.
 
 ## 2. Integrity simulator (background)
 
-**Graph of rigid chunks (oriented particles) joined by 6-DOF bonds; static linear solve + connectivity.**
-Chunk = position + rotation; bond = RBSN/Cosserat element (axial, shear, bend, twist). No diagonals; cantilevers fail
-from moment. Not dynamics: one SPD system, deterministic, warm-startable. (Gauss-Seidel on stiff long load paths
-converges too slowly; tension-only bond graphs, e.g. Blast, miss moments.)
+**Status (2026-11-14): the in-house structure solver (RBSN bond lattice, block-Jacobi PCG, tier-1 failure ratios + damage) was removed**:
+results and feel were not what we wanted. An **external structure solver** (developed separately) will be integrated later. Until then bonds break only
+by scripted removal (cuts, explosions, picking) and tier 0 connectivity drops whatever loses support.
 
-Math. `n` chunks, `u: (6n,)` = per chunk `[translation(3), rotation vector(3)]`; supports (foundation) eliminated so `K` is SPD; solve `K u = f`.
-Bond `b` joining `i,j`: face centroid `c`, `r_i = c - x_i`, `r_j = c - x_j`, frame `R = [n t1 t2]`, area `A`, face moments `I1, I2, J`, `L = |r_i| + |r_j|`.
-- Face motion `e = T u_ij : (6,)`, `T: (6,12)`, `e = [(u_j + th_j x r_j) - (u_i + th_i x r_i); th_j - th_i]`.
-- `kd = diag(EA/L, kappa G A/L, kappa G A/L, G J/L, E I1/L, E I2/L)` with `G = E/(2(1+nu))`, shear factor `kappa` ~5/6 (per-axis stiffness vector, scaled by `(1-d)`, below); `K_b = T^T R6 kd R6^T T : (12,12)` with `R6 = blockdiag(R,R)`; `K = sum_b scatter(K_b)`, CSR of 6x6 blocks.
-- Bond force `F_b = kd R^T e = [N, V1, V2, Tq, M1, M2]`; corner stress `sigma = N/A + M1 z/I1 - M2 y/I2`, `tau = |V|/A + Tq r/J` at each stored polygon corner.
-- Loads `f_i = m_i g + impact`. Free (airborne) islands: D'Alembert inertial relief keeps loads self-equilibrated (solver supports it; debris uses the cheaper v1 rule below first).
+Kept (solver-independent):
+- **Structure graph** (`StructureGraph`): `ChunkModel` + per-bond `alive` flags + chunk -> bond adjacency (CSR) + per-chunk `attached` flag.
+- **Tier 0, connectivity** (instant, O(local)): on a bond break, BFS from both ends, stop as soon as a support (or a proven-grounded chunk) is reached; unsupported components go to section 3.
+- Message boundary (section 7): `IntegrityCore` (inline or worker) takes removals, returns broken bonds, detached components and a graph version.
 
-Solver: block-Jacobi (6x6) PCG, warm-started from the last `u` (a break is a low-rank change). Time-sliced budget
-per tick; "converged" flag. Behind `solve(f) -> u` so a sparse block Cholesky (refactor on break) can replace it if
-PCG needs too many iterations on stiff 3D lattices (measure in M2).
-
-**Tier 0, connectivity** (instant, O(local)): on a bond break, bidirectional BFS from both ends, stop as soon as a support is reached.
-**Tier 1, stress** (every few frames and after any break/new load): ratios, damage, removal as below.
-
-Damage (all materials): each bond has one scalar damage `d in [0,1)` (per-mode damage only if a material needs it later); stiffness `kd <- kd (1-d)` (floor 1e-3, SPD kept).
-`d += damageRate * max(0, ratio_filtered - 1) * dt` (`damageRate = Infinity` = instant failure), ratio low-passed ~50 ms (a single contact impulse must not break
-a bond). `d >= 1` removes the bond. Gives creaking, delay and load redistribution. Bonds of promoted joint chains (4b) leave the static solve; see 4b for the handshake.
-- Everything material-specific comes from the bond's `Material` record (section 2b); no code branches on "concrete" or "metal".
-- Loads from Rapier: contact-force events on a structure chunk -> `F = J/dt_eff` (~15 ms), x2 dynamic amplification, low-passed; explosions = radial impulse + direct damage by distance. Debris re-fracture on landing: v1 uses a per-bond impulse threshold (no solve); full free-island solve later.
-- Visual pose output (also in the worker): `x_i, q_i` per chunk, see section 4.
+**External solver contract (to be fixed when it lands)**
+- Input: the graph (chunks: pos, volume, mass `m_i = rho V_i`, material id, support flag; bonds: a, b, area, centroid, normal, tangents, `I1, I2, J`, face corners,
+  material id incl. derived interface materials), the `alive` mask, the `Material` table (section 2b), and loads (gravity; impacts from `drainImpactEvents`).
+- Output: bonds to break (and optionally per-bond stress/utilisation for display, per-chunk displacements for `offsets` render poses, section 4).
+- It runs inside `IntegrityCore` (worker side) so the frame never waits; breaks it reports go through `StructureGraph.removeBonds` -> tier 0 -> handoff, as scripted cuts do.
+- Prior approach, for reference (git history before 2026-11-14): 6-DOF bond stiffness `K_b`, CSR of 6x6 blocks, warm-started PCG, corner-stress failure ratios, low-passed damage
+  with propagation, impact peaks held ~50 ms. Lessons in NOTES "Removed structure solver".
 
 ## 2b. Materials (data-driven; many types)
+
+The strength/damage fields below are data for the (external) structure solver; with the in-house solver removed, only density (masses), `deform`, `hull` and `render` are read today.
 
 A material is a record of behaviour parameters, not a kind. Presets are just data (concrete, steel, aluminium, glass, wood, brick, rubber, clay, ice, drywall, ...).
 
@@ -101,7 +94,7 @@ Then damage as above. `propagation`: when a bond breaks, `d_neighbour += propaga
 Grain: strength of a bond is multiplied by `lerp(1, strengthRatio, 1 - |n . axis|)`, so wood splits along the grain.
 Bond materials: a bond joining chunks of different materials uses an explicit interface material if the generator provides one (mortar between bricks, steel plate on concrete);
 otherwise stiffness in series `1/E = 1/E_a + 1/E_b` and the *weaker* strengths.
-Which deformation path a part uses comes from `deform` (and plastic vs elastic from `sigmaY`), so a new material needs only a new record, plus a test row in the material matrix test (every preset: a cantilever under load, a compressed column, an impacted wall; no NaN, expected failure mode).
+Which deformation path a part uses comes from `deform` (and plastic vs elastic from `sigmaY`), so a new material needs only a new record, plus a test row in the material matrix test (every preset: a cantilever under load, a compressed column, an impacted wall; no NaN, expected failure mode). The material matrix test was removed with the solver; it returns with the external solver.
 
 ## 3. Island splitting -> Rapier
 
@@ -153,7 +146,7 @@ with a 1.6-cell support touches 8 cells (27 with a wider one); a Voronoi cell ha
 - **CPU reference** of the same formulas for tests and for small low-poly parts.
 - **Fake deformation (`deform: 'offsets'`, e.g. concrete, brick, stone, plaster)** (decision: no real nonlinear solve; no skinning, every such vertex has `count == 1`, so chunks just move rigidly).
   Each chunk keeps a permanent visual offset `o_i: (3,)` and tilt `th_i: (3,)` on top of its rest pose; render pose is
-  `x_i = x_i0 + amplify * u_el,i + o_i`, `q_i = exp(th_i + amplify * th_el,i) q_i0` (both world-frame rotation vectors, small), with `u_el` the static-solve displacement (sagging slabs) and `o, th` from impacts
+  `x_i = x_i0 + amplify * u_el,i + o_i`, `q_i = exp(th_i + amplify * th_el,i) q_i0` (both world-frame rotation vectors, small), with `u_el` the structure solver's displacement (sagging slabs; 0 until the external solver provides it) and `o, th` from impacts
   (the total offset is clamped to `o_max` so the render pose never strays far from the collider):
   - Impact at point `p`, unit direction `n`, impulse `J`: for chunks within graph radius `R`, `do_i = s_sat(J) phi(g_i/R) n`, `dth_i = k_t phi(g_i/R) (n x (c_i - p)) / R`,
     where `g_i` = bond-graph distance from the hit chunk, `phi(s) = (1 - s^2)^3`, `s_sat = o_max (1 - exp(-J/J_ref))` (saturates, so repeated hits dent less), `o_max` ~5-10% of chunk size.
@@ -245,13 +238,13 @@ Principle: the frame never waits on destruction work. Everything below is a *lat
 **Frame budget rules**
 - Main thread per frame does only bounded work: apply results, upload dirty GPU slices, a capped number of Rapier mutations. Caps are GUI-tunable:
   collider create/remove <= N per frame (queue the rest; islands appear a few frames later, tier 0 results are applied first), hull refits <= M, `drawRange`/weight uploads <= bytes.
-- All heavy producers are **budgeted queues** (a time slice via `performance.now()`, or a fixed iteration count when determinism is wanted): PCG iterations, re-weighting after a break,
+- All heavy producers are **budgeted queues** (a time slice via `performance.now()`, or a fixed iteration count when determinism is wanted): structure-solver iterations, re-weighting after a break,
   `V_c` rebuilds, Voronoi generation.
 - Results carry a **graph version**. A result computed against version `v` is applied only to bonds/chunks still alive; breaks always win over stale poses/ratios. Commands to the worker are ordered (sequence numbers).
 - Backpressure: if the worker is behind, coalesce loads (sum impacts per chunk per tick) instead of queueing each one.
 
 **Threads (possible from day one, off by default where it adds nothing)**
-- *Integrity worker* (already planned, M3): solver, damage, fake-deformation offsets, labeling. Talks via `postMessage` with transferable double buffers.
+- *Integrity worker* (M3): structure graph + labeling now; external structure solver and fake-deformation offsets later. Talks via `postMessage` with transferable double buffers.
 - *Geometry worker* (optional): weights/`V_c` rebuilds, hull candidate selection, Voronoi/glTF import. Same command/result protocol, so it is a second instance of one `Worker` wrapper.
 - *Physics worker* (later, if Rapier + step cost is high): Rapier runs in its own worker, main thread only renders from posted pose buffers. The `PhysicsBackend` interface (top of this plan) makes this a swap; commands (create island, remove collider) become messages.
 - Upgrade path to `SharedArrayBuffer` (chunk poses, damage, ratios as shared typed arrays with an atomic double-buffer index): needs cross-origin isolation headers
@@ -282,18 +275,19 @@ Principle: the frame never waits on destruction work. Everything below is a *lat
 
 **M1 Skeleton.** `ChunkModel`, a box/brick-grid generator (bonds from face overlap), Rapier harness with the backend interface,
 the `Material` table with presets (section 2b), project setup (above), debug render (chunk colors, bond lines coloured by ratio), face tags + surface flag, and the culled two-material render (section 6) from the start, since it shapes the index buffers. *No Voronoi needed to proceed.*
-**M2 Bond solver** (headless, written as pure typed-array kernels in `kernels/`, section 7, with a micro-benchmark for the AS decision): axial bar vs `FL/(EA)`; cantilever vs Euler-Bernoulli; free island equilibrium; warm-start speed-up; local effect of a break; no per-solve allocation. Measure PCG iterations at ~1000 chunks.
-**M3 Core loop (brittle collapse, e.g. concrete/brick).** Worker + tier 0/1, damage, material-driven failure ratios (the material matrix test lands here), component labeling, island handoff to Rapier, impact loads. Done when removing a wall drops the dependents instantly and an overloaded cantilever slab cracks and falls after a delay.
+**M2 Bond solver** — *removed 2026-11-14 (replaced by an external solver, section 2)*. Was: (headless, written as pure typed-array kernels in `kernels/`, section 7, with a micro-benchmark for the AS decision): axial bar vs `FL/(EA)`; cantilever vs Euler-Bernoulli; free island equilibrium; warm-start speed-up; local effect of a break; no per-solve allocation. Measure PCG iterations at ~1000 chunks.
+**M3 Core loop.** Worker + tier 0, component labeling, island handoff to Rapier. Done when removing a wall drops the dependents instantly. (Tier 1 stress/damage, failure ratios, impact loads and the material matrix test were removed with the solver; they come back with the external solver.)
+**M3b External structure solver integration** (when available): wire it into `IntegrityCore` per the section 2 contract; restore impact loads, overload-driven breaks, the material matrix test, and the stress/damage debug views.
 **M4 Skinning + deformation** (sections 4, 4b): fake offsets for `offsets` materials (impact dents, ring cracks); `joints` materials (steel panels/posts) as joint chains with the promotion handshake, plasticity by rest-target update, skinned from body poses. Tests: cantilever sag vs Euler-Bernoulli (expect some error; record it), permanent set after unload, fracture removes the joint and separates bodies, stability over 10 s.
 **M5 Hull refit** (section 5) with the tier A/B toggle and budget GUI.
 **M6 Voronoi (non-priority):** per site clip the element's convex volume by bisector planes of its k nearest sites; the clipped polygon on each plane is the bond face, so adjacency/area/moments come free. Graded density, Poisson-disk sites. Concave buildings are built from convex elements (columns, slabs, panels around openings), each fractured in its own volume, bonded by coplanar face overlap. Blender route: any splitter -> glTF, one node per chunk + `extras`; importer builds bonds by AABB overlap + coplanar opposite-normal face clipping. Tests: volumes sum to the source (1e-9), symmetric adjacency.
 **M7 Game scene + perf** (frame-budget caps and queues from section 7, worker/SAB upgrades and AS ports only where profiling justifies them): level, wrecking ball/explosive, GUI, debris cap + despawn/merge of tiny far pieces, profiling before optimizing.
 
 ## Risks
-1. PCG convergence on stiff 3D lattices (fallback: sparse Cholesky).
+1. External structure solver integration: data contract (section 2), cost per tick under the frame budget, and how its outputs feed 4/4b (promotion, offsets).
 2. Joint-chain plasticity (4b) is the least proven part: stiffness/stability of iterative joints, the rest-target update, and the promotion/demotion handshake with the integrity worker. Validate on a cantilever first.
    Related: three deformation sources (static solve, fake offsets, joint chains) must agree on the render pose at promotion/demotion; test for pops.
-3. Small-displacement linear solve has no P-delta: slender columns won't buckle by themselves; add an Euler-load check per column if the game needs it.
+3. (If the external solver is a small-displacement linear solve) no P-delta: slender columns won't buckle by themselves; add an Euler-load check per column if the game needs it.
 4. Rapier JS API details (convexMesh, setShape, contact-force events, re-parenting) must be checked against the installed version in M1.
 5. Overlapping hulls (`w > 0` influence): cross-body overlap after splits (grace group, Rapier notes) and chain self-collision (4b) are the practical hazards; solver is Float64 but Rapier/GPU are Float32, so keep poses relative to the island/structure origin to limit precision loss on large levels.
 6. Collider recreation on detach (hundreds of colliders in one frame): budget/spread across frames if it spikes.

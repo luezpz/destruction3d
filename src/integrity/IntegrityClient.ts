@@ -6,7 +6,7 @@ import type { MaterialTable } from '../model/Material';
 import { InitRequest, IntegrityCore, TickReply, TickRequest } from './IntegrityCore';
 
 export interface IntegrityClient {
-  /** Sends a tick request; f's buffer is transferred (do not touch it until it comes back in the reply). */
+  /** Sends a tick request; the removal buffer is transferred. */
   request(req: TickRequest): void;
   /** Returns the reply if one arrived since the last poll. */
   poll(): TickReply | null;
@@ -38,7 +38,7 @@ export class WorkerIntegrity implements IntegrityClient {
     const init: InitRequest = { type: 'init', model, table };
     this.worker.postMessage(init);
   }
-  request(req: TickRequest): void { this.worker.postMessage(req, [req.f.buffer as ArrayBuffer, req.remove.buffer as ArrayBuffer]); }
+  request(req: TickRequest): void { this.worker.postMessage(req, [req.remove.buffer as ArrayBuffer]); }
   poll(): TickReply | null { const r = this.reply; this.reply = null; return r; }
   dispose(): void { this.worker.terminate(); }
 }

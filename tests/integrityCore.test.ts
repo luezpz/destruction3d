@@ -4,7 +4,6 @@ import { createMaterialTable, materialId } from '../src/model/Material';
 import { Box, generateFromBoxes } from '../src/model/boxGenerator';
 import { IntegrityCore, TickReply, TickRequest, replyTransfer } from '../src/integrity/IntegrityCore';
 import { IntegrityClient } from '../src/integrity/IntegrityClient';
-import { chunkMasses, gravityLoads } from '../src/integrity/loads';
 import { RapierBackend, initRapier } from '../src/physics/RapierBackend';
 import { DestructionSim } from '../src/sim/DestructionSim';
 
@@ -19,34 +18,27 @@ function cantilever(N: number, h: number) {
   return generateFromBoxes(boxes, table);
 }
 
-const req = (f: Float64Array, remove: number[] = [], dt = 1 / 60): TickRequest =>
-  ({ type: 'tick', dt, f, remove: Uint32Array.from(remove), budgetMs: 1000, tol: 1e-8 });
+const req = (remove: number[] = []): TickRequest => ({ type: 'tick', remove: Uint32Array.from(remove) });
 
 describe('IntegrityCore', () => {
-  it('returns the load buffer, ratios, and survives a structured-clone transfer (worker path)', () => {
-    const m = cantilever(4, 0.2), core = new IntegrityCore(structuredClone(m), structuredClone(table));
-    const f = new Float64Array(6 * m.chunkCount);
-    gravityLoads(chunkMasses(m, table), 9.81, f);
-    const r = core.tick(req(f));
-    expect(r.f).toBe(f);
-    expect(r.converged).toBe(true);
-    expect(r.ratio.length).toBe(m.bondCount);
-    expect(r.ratio[0]).toBeGreaterThan(0); // root bond carries the self-weight moment; filtered ratio rising
-    const moved = structuredClone(r, { transfer: replyTransfer(r) }) as TickReply;
-    expect(f.byteLength).toBe(0); // detached by the transfer
-    expect(moved.f.length).toBe(6 * m.chunkCount);
-  });
-
   it('scripted removal: broken + detached in the same reply, version bumps once per breaking request', () => {
     const m = cantilever(4, 0.2), core = new IntegrityCore(m, table);
-    const f = new Float64Array(6 * m.chunkCount);
-    expect(core.tick(req(f)).version).toBe(0);
-    const r = core.tick(req(f, [1]));
+    expect(core.tick(req()).version).toBe(0);
+    const r = core.tick(req([1]));
     expect(Array.from(r.broken)).toEqual([1]);
     expect(Array.from(r.detachedOffset)).toEqual([0, 3]);
     expect(Array.from(r.detachedChunks).sort()).toEqual([2, 3, 4]);
     expect(r.version).toBe(1);
-    expect(core.tick(req(f)).version).toBe(1);
+    expect(core.tick(req()).version).toBe(1);
+  });
+
+  it('survives structured-clone init and a transferred reply (worker path)', () => {
+    const m = cantilever(4, 0.2), core = new IntegrityCore(structuredClone(m), structuredClone(table));
+    const r = core.tick(req([0]));
+    const moved = structuredClone(r, { transfer: replyTransfer(r) }) as TickReply;
+    expect(r.broken.byteLength).toBe(0); // detached by the transfer
+    expect(Array.from(moved.broken)).toEqual([0]);
+    expect(moved.detachedOffset[1]).toBe(4);
   });
 });
 
@@ -63,62 +55,27 @@ class DelayedClient implements IntegrityClient {
 }
 
 describe('DestructionSim with a slow integrity client', () => {
-  it('keeps one request in flight, accumulates dt, applies breaks + handoff when the reply lands', () => {
+  it('sends only with queued removals, keeps one request in flight, applies breaks + handoff on reply', () => {
     const m = cantilever(4, 0.2), physics = new RapierBackend();
     const client = new DelayedClient(new IntegrityCore(m, table));
     const sim = new DestructionSim(m, table, physics, { client });
+    sim.tick(1 / 60);
+    expect(client.requests.length).toBe(0); // nothing to do
+    sim.removeBonds([3]);
     sim.tick(1 / 60);
     sim.removeBonds([0]);
     for (let k = 0; k < 4; k++) sim.tick(1 / 60); // reply not delivered: no new request
     expect(client.requests.length).toBe(1);
     client.deliver();
-    sim.tick(1 / 60); // applies reply 1 (no breaks), sends request 2 with the removal and the accumulated dt
+    expect(sim.tick(1 / 60)).toBe(1); // applies reply 1 (tip falls), sends the queued removal
+    expect(sim.handoff.islands.length).toBe(1);
     expect(client.requests.length).toBe(2);
-    expect(client.requests[1].dt).toBeCloseTo(5 / 60, 12);
     expect(Array.from(client.requests[1].remove)).toEqual([0]);
     client.deliver();
     expect(sim.tick(1 / 60)).toBe(1);
-    expect(sim.brokenTotal).toBe(1);
-    expect(sim.handoff.islands.length).toBe(1);
+    expect(sim.brokenTotal).toBe(2);
+    expect(sim.handoff.islands.length).toBe(2);
     for (let i = 1; i <= 4; i++) expect(sim.isStatic[i]).toBe(0);
     physics.dispose();
-  });
-});
-
-describe('impact hold and solve continuation (demo fixes)', () => {
-  it('re-sends an impact peak until a converged reply arrives after the hold window', () => {
-    const m = cantilever(4, 0.2), physics = new RapierBackend();
-    const client = new DelayedClient(new IntegrityCore(m, table));
-    const sim = new DestructionSim(m, table, physics, { client, impactHold: 0.05 });
-    const g = new Float64Array(6 * m.chunkCount);
-    gravityLoads(chunkMasses(m, table), 9.81, g);
-    const extraX = () => client.requests[client.requests.length - 1].f[6 * 3] - g[6 * 3]; // impact on chunk 3, x row
-    sim.impacts.add(3, 1000, 0, 0);
-    sim.tick(1 / 60);
-    expect(extraX()).toBeGreaterThan(0);
-    // Each delivered reply converges; the peak must survive until it is >= 0.05 s old.
-    let sentWithImpact = 1;
-    for (let k = 0; k < 10; k++) {
-      client.deliver();
-      sim.tick(1 / 60);
-      if (extraX() > 0) sentWithImpact++;
-    }
-    expect(sentWithImpact).toBe(3); // ages 0, 1/60, 2/60 < 0.05; dropped once 3/60 old
-    expect(extraX()).toBe(0);
-    physics.dispose();
-  });
-
-  it('continues PCG across requests while loads are unchanged; restarts when they change', () => {
-    const m = cantilever(30, 0.2), core = new IntegrityCore(m, table);
-    const f = new Float64Array(6 * m.chunkCount);
-    gravityLoads(chunkMasses(m, table), 9.81, f);
-    const slice = (ff: Float64Array) => core.tick({ type: 'tick', dt: 1 / 60, f: ff, remove: new Uint32Array(0), budgetMs: 0.001, tol: 1e-14 });
-    slice(f);
-    const first = core.solver.iterations;
-    slice(f);
-    expect(core.solver.iterations).toBeGreaterThan(first); // continued, not restarted
-    const f2 = f.slice(); f2[6 * 10 + 1] -= 500;
-    slice(f2);
-    expect(core.solver.iterations).toBeLessThanOrEqual(first); // restarted on new loads
   });
 });
