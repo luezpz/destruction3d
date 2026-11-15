@@ -1,9 +1,9 @@
-# 10-destruction — plan v2 (Rapier does rigid bodies; we write the destruction layer)
+# destruction3d — plan v2 (Rapier does rigid bodies; we write the destruction layer)
 
 Standalone: no imports from other projects (can be lifted out). Rapier (`@dimforge/rapier3d-compat`, Havok later)
 owns rigid bodies, compounds, contacts, sleeping. Hide it behind a thin `PhysicsBackend` interface
-(`createStaticChunk`, `removeCollider`, `createDynamicIsland`, `setChunkShape`, `createJoint`/`removeJoint`/`setJointTargets`, `readBodyPoses`,
-`setCollisionGroups`, `drainImpactEvents`) so Havok is a swap.
+(`createStaticBody`/`createStaticChunk`, `removeCollider`, `createDynamicIsland`/`removeBody`, `setChunkShape`, `createJoint`/`createSpringJoint`/`setSpringTarget`/`removeJoint`,
+`readBodyPoses`/`readBodyStates`, `applyWrenches`, `setCollisionGroups`, `drainImpactEvents`; source of truth: `physics/PhysicsBackend.ts`) so Havok is a swap.
 We implement: **integrity simulator** (+ data-driven materials), **island splitting**, **many-bone skinning**, **fast hull refit**, **culled rendering**; Voronoi is last.
 Out of scope for now: audio, dust/debris particles, save/load, networking, terrain destruction.
 
@@ -11,20 +11,21 @@ Out of scope for now: audio, dust/debris particles, save/load, networking, terra
 
 Vite + TypeScript + three.js (WebGPU/TSL) + lil-gui + Rapier, own `index.html`. Layout: `model/` (ChunkModel, Material table, generators), `kernels/` (pure typed-array math),
 `integrity/` (structure graph, connectivity, worker entry; external structure solver plugs in here), `physics/` (PhysicsBackend + Rapier impl), `render/` (skin shader, culling buffers), `tests/` (headless, no three.js/Rapier where possible).
-Scripts: `dev`, `typecheck`, `test`, `build`. Keep a terse `NOTES.md` (architecture map, commands, decisions, gotchas) updated with each change. Units: SI, except E in GPa and strengths/stresses in MPa (converted to Pa inside kernels).
+Scripts: `dev`, `typecheck`, `test`, `build`. Keep a terse `NOTES.md` (architecture map, commands, decisions, gotchas) updated with each change. Units: SI, except E/H in GPa and strengths/stresses in MPa (converted to Pa inside kernels).
 
 ## Data flow
 
 ```
 main thread                                   Worker (integrity)
-Rapier: static chunk colliders + debris  --impact loads, removed bonds-->  [external structure solver] -> bonds to break
+Rapier: static chunk colliders + debris  --removed bonds, impact loads*-->  [external structure solver*] -> bonds to break
         ^                                                                    StructureGraph + Connectivity (components)
         | create/remove colliders, refit shapes                              |
-        +---- islands, broken bonds, chunk poses (static graph + offsets) <--+
+        +---- islands, broken bonds, chunk poses* (static graph + offsets) <--+
 renderer: pose DataTexture + many-bone skinning shader
           pose sources merged on the main thread: static/"offsets" chunks from the worker, chunks on dynamic bodies
           (debris islands, promoted joint chains) from Rapier (body pose o local)
 ```
+`*` = not wired yet: impact loads and the solver arrive in M3b, worker chunk poses with fake offsets in M4. Today the worker gets removals and returns breaks + detached components.
 Worker messages use double-buffered transferable typed arrays (no SharedArrayBuffer, so no COOP/COEP headers needed).
 A 1-3 frame latency is fine for fake destruction.
 
@@ -60,7 +61,7 @@ Kept (solver-independent):
 
 ## 2b. Materials (data-driven; many types)
 
-The strength/damage fields below are data for the (external) structure solver; with the in-house solver removed, only density (masses), `deform`, `hull` and `render` are read today.
+The strength/damage fields below are data for the (external) structure solver and for joint chains (4b: `E`, `nu`, `sigmaY`, `H`, `epsPlasticMax`); with the in-house solver removed, only density (masses), `deform`, `hull`, `render` and `reinforcement` are read by the app today.
 
 A material is a record of behaviour parameters, not a kind. Presets are just data (concrete, steel, aluminium, glass, wood, brick, rubber, clay, ice, drywall, ...).
 
@@ -83,13 +84,16 @@ Material {
 ```
 Axes, not names: `sigmaY > 0` = plastic (metals, clay, aluminium); `sigmaY = 0` with a low `epsElasticMax` = brittle (concrete, glass, ice); `sigmaY = 0` with a high `epsElasticMax` = elastic (rubber, bounces back, no permanent set).
 
+Corner stresses (shared by the solver and 4b): bond load `[N, V1, V2, Tq, M1, M2]` in the bond frame (normal `n`, tangents `t1, t2`); at face corner `c` with
+in-plane coords `(y_c, z_c)` relative to the centroid, `sigma_c = N/A + M1 z_c/I1 - M2 y_c/I2`, `tau_c = sqrt(V1^2 + V2^2)/A + |Tq| sqrt(y_c^2 + z_c^2)/J`;
+`sigma_max/min` and `tau` are taken over the corners.
 Failure ratio of a bond = max over the criteria its material enables:
 - tension `sigma_max/sigmaT`, compression `-sigma_min/sigmaC`, shear `tau/(tauC + mu sigma_compr)` (always);
 - plastic (`sigmaY > 0`): `sigma_v/(sigmaY + H eps_p)` with von Mises `sigma_v = sqrt(sigma^2 + 3 tau^2)` at the worst corner; above 1 the rest target moves (plasticity), break at `eps_p > epsPlasticMax`;
 - elastic (`sigmaY == 0`): `eps / epsElasticMax`, with `eps = max_corner |sigma| / E` (axial + bending fibre strain).
 Invalid combinations are rejected when the table loads: `hull: 'refit'` needs `deform: 'joints'` (only bodies with skinned chunks change shape).
 Where plasticity actually *happens* depends on `deform`: `joints` -> the promoted joint chain updates its rest targets (4b); in the static graph a plastic bond with ratio > ~0.7 triggers
-promotion (4b). `offsets`/`none` with `sigmaY > 0` (e.g. clay or soft stone as dents) have no rest-target update: ratio > 1 grows damage, and `epsPlasticMax` is read as a damage limit.
+promotion (4b; needs solver ratios, so until M3b promotion is by impact or script only). `offsets`/`none` with `sigmaY > 0` (e.g. clay or soft stone as dents) have no rest-target update: ratio > 1 grows damage, and `epsPlasticMax` is read as a damage limit.
 Then damage as above. `propagation`: when a bond breaks, `d_neighbour += propagation` for its adjacent bonds, which makes glass shatter in a chain; 0 keeps failure local.
 Grain: strength of a bond is multiplied by `lerp(1, strengthRatio, 1 - |n . axis|)`, so wood splits along the grain.
 Bond materials: a bond joining chunks of different materials uses an explicit interface material if the generator provides one (mortar between bricks, steel plate on concrete);
@@ -108,9 +112,9 @@ different colors to neighbours). Run after each batch of removed bonds, local to
 2. Every other component becomes one dynamic body: `RigidBody.dynamic` at the component COM, one convex collider per chunk
    (local translation = chunk pos - COM). Mass: set explicitly from the rest cell volumes x density (colliders at density 0 + `setAdditionalMassProperties`); hulls overlap, so Rapier's per-hull volume would double count. Inertia from the same cell volumes (sum of cell inertia + parallel axis about the island COM).
 3. Velocity: 0 when it comes from the static structure; when splitting a moving debris island, `v + w x (com_child - com_parent)`.
-4. Remove the detached chunks' old colliders from the static structure (`removeCollider`). Assume Rapier JS cannot re-parent a collider (verify in M1; if it can, use that),
-   so cache each chunk's hull points + indices and recreate (see section 5: with indices supplied there is no quickhull cost).
-5. Each new island keeps its sub-graph in the worker, so it can fracture again.
+4. Remove the detached chunks' old colliders from the static structure (`removeCollider`). Rapier JS cannot re-parent a collider (verified in M1, NOTES "Rapier API facts"),
+   so cache each chunk's hull points + indices and recreate (see section 5: indices are supplied; whether that skips quickhull is checked in M5).
+5. Each new island keeps its sub-graph in the worker, so it can fracture again (not implemented yet: handoff skips components that are already debris).
 Test: mass and momentum conserved across a split; labeling of a known removal pattern; a one-support-removed wall detaches exactly its dependents.
 
 ## 4. Many-bone skinning for touching cells (mainly `deform: 'joints'`) and fake deformation (`deform: 'offsets'`)
@@ -153,7 +157,7 @@ with a 1.6-cell support touches 8 cells (27 with a wider one); a Voronoi cell ha
   - Cracks fall out of the offset gradient: per bond, opening `w_b = (o_j - o_i) . n_b` (shear slip from the tangential part); `d_b = max(d_b, w_b / w_max)`.
     The dent centre moves as a block and the ring of bonds around it takes the offset difference, so ring cracks and revealed inner faces (section 6) appear around impacts; a bond that
     reaches `d >= 1` really breaks (section 2). Offsets are permanent.
-  - Colliders stay at the rest pose (offsets <= `o_max`); a chunk that detaches takes its current visual pose as its body pose. Runs in the worker with the damage state, which already returns chunk poses.
+  - Colliders stay at the rest pose (offsets <= `o_max`); a chunk that detaches takes its current visual pose as its body pose. Runs in the worker (`IntegrityCore`), which keeps the per-bond damage `d_b` and will return chunk poses with its breaks (not yet: today it returns breaks/components only).
   - `deform: 'joints'` materials (metals, rubber, soft plastics) get real deformation (section 4b). Real deformation of brittle materials isn't worth it: strains before cracking are millimetres.
   - `deform: 'none'` (glass): no dent; with `propagation > 0` it shatters instead.
 - Candy-wrapper from linear blending only on strong twist; switch to dual quaternions if it shows.
@@ -163,29 +167,27 @@ with a 1.6-cell support touches 8 cells (27 with a wider one); a Voronoi cell ha
 
 Each chunk of a *bendable part* (steel/aluminium panel, post, rail, door; rubber and clay too, with `sigmaY = 0` meaning springs back and a low `sigmaY` meaning clay-like) is a dynamic Rapier body; neighbours are linked by a **compliant joint** instead of a rigid fixed joint.
 - Why not a pure fixed joint: its error is the solver's residual (depends on mass, dt, iterations, joint frequency), not on a material stiffness, so
-  error -> stress is not controllable and differs per chunk mass. Use a generic joint with all 6 axes motor-sprung to the rest pose with explicit
-  stiffness `k` (per axis from `EA/L, G A/L, GJ/L, EI/L`, as in section 2) and damping. Then `F = k e` is a physical-ish bond force.
-  **Spike result (M4, NOTES "M4 joint spike")**: Rapier JS has no 6-axis motors; explicit springs are far too soft under the cap below. Use a **spherical joint
-  (translation locked) with implicit angular motors** (torsion GJ/L, bending EI/L, scaled ~1e-2 so motor compliance dominates the solver error; 4 substeps, 16 iterations);
-  moments `M = k phi` from body poses; axial/shear are rigid (not measured). Plastic set = motor target angles.
-- **Stiffness cap (required)**: real `EA/L` for steel is ~1e9 N/m on kg-scale chunks; no iterative/explicit spring is stable at that frequency. Cap per axis
-  `k <= m_eff (omega_max)^2` with `omega_max ~ 1/(2-4 dt)`, `m_eff` the reduced mass of the pair (inertia for rotational axes). Stress is computed from the joint **force**
-  `F = k e` (the load the bond actually carries in quasi-static equilibrium), not from strain times real E, so the cap only exaggerates elastic sag; yield and fracture loads stay correct.
-- Error `e: (6,)` from body poses each step: `dx = R_a^T (x_b - x_a) - d0` (translation in parent frame vs rest offset `d0`), `phi = log(q0^-1 q_a^-1 q_b)` (rotation vector vs rest `q0`).
-- Plasticity = rest-shape update on the joint target (VIPER-style): stress from `F = k e` mapped to `[N, V1, V2, Tq, M1, M2]` and the same corner formulas as section 2 (von Mises at the worst corner); if `sigma > sigma_y`,
-  `d0 += (1 - sigma_y/sigma) dx`, `q0 <- q0 exp((1 - sigma_y/sigma) phi)`, then push the new targets to the motors. Each step, not per frame; hardening via `sigma_y + H eps_p`.
-- Fracture: plastic strain above a limit, or filtered `k|e|`-based ratio > 1 -> remove the joint. The two sides are already separate bodies, so
+  error -> stress is not controllable and differs per chunk mass, and there is no motor target to carry a plastic set.
+- **Joint (decided by the M4 spike, NOTES "M4 joint spike")**: Rapier JS has no 6-axis motors, and explicit springs are ~1e5x too soft under their stability cap
+  `k <= m_eff omega_max^2` (`omega_max ~ 1/(2-4 dt)`). Use a **spherical joint (translation locked) with 3 implicit angular motors** to the rest orientation:
+  torsion `GJ/L`, bending `EI1/L`, `EI2/L` (bond section values, section 1), scaled by ~1e-2 so the motor compliance dominates the solver error; 4 substeps, 16 iterations.
+  Moments `M = k phi` are the load the bond carries in quasi-static equilibrium (~9% of statics in the spike), so the scaling only exaggerates elastic sag; yield and fracture moments stay right.
+  Axial/shear are rigid and not measured (`N = V = 0`, or from equilibrium if needed); metals fail by bending first.
+- Error `phi: (3,)` from body poses each step: `phi = log(q0^-1 q_a^-1 q_b)` (relative rotation vs rest `q0`, in the parent frame).
+- Plasticity = rest-shape update on the motor targets (VIPER-style): `[0, 0, 0, Tq, M1, M2]` from `M = k phi` through the corner formulas of section 2b (von Mises at the worst corner);
+  if `sigma > sigma_y`, `q0 <- q0 exp((1 - sigma_y/sigma) phi)`, then push the new targets to the motors. Each step, not per frame; hardening via `sigma_y + H eps_p`.
+- Fracture: plastic strain above `epsPlasticMax`, or filtered moment-based ratio > 1 -> remove the joint. The two sides are already separate bodies, so
   **no island labeling is needed for these parts**.
 - Poses come for free (body transforms), colliders follow the bodies, and large bends are exact. Tier A (section 5) is automatic here; tier B adds shape change.
 - Weaknesses: (1) stiff chains of iterative joints sag/stretch (more solver iterations, short chains, mass ratios <~10); (2) the part is awake while deforming, so sleep it
-  once `|e|` change is tiny; (3) loads from the *static* structure (a slab resting on a steel beam) are not seen by the dynamic chain.
-  Therefore scope: parts that mostly carry their own weight and impacts. For a structural beam, the integrity solver provides the interface
-  bond forces as external forces on the chain's end bodies, or the beam stays on the static solve with damage only (no large bend).
-- Promotion: a `joints` element lives in the static graph until impacted or its ratio exceeds ~0.7, then its chunks are promoted to dynamic bodies + joints
+  once `|phi|` change is tiny; (3) loads from the *static* structure (a slab resting on a steel beam) are not seen by the dynamic chain.
+  Therefore scope: parts that mostly carry their own weight and impacts. For a structural beam, the external solver provides the interface
+  bond forces as external forces on the chain's end bodies (`applyWrenches`), or the beam stays on the static solve with damage only (no large bend).
+- Promotion: a `joints` element lives in the static graph until impacted (or scripted) or its solver ratio exceeds ~0.7 (M3b), then its chunks are promoted to dynamic bodies + joints
   (fixed body anchors for supported ends). Demotion when at rest for a while (current poses become the new rest state, plastic offsets kept).
 - **Who runs it**: the joint-error/plasticity/fracture loop needs the body poses, so it runs where Rapier runs (main thread, or the physics worker if split out).
   Handshake with the integrity worker: on promotion the worker removes those chunks from the static solve and treats the interface chunks as supports (the chain carries its own load);
-  on a joint break or demotion the main side sends `bondBroken`/`demote` messages so the worker's graph, weights and culling stay in sync.
+  on a joint break the main side sends the bond as a removal (same path as scripted cuts), on demotion a `demote` message, so the worker's graph, weights and culling stay in sync.
 - **Self-collision**: each chunk of a chain is its own body with an overlapping hull (section 5). `setContactsEnabled(false)` only covers directly jointed pairs, and collision groups are 16 bits,
   so use `partId mod P` as the group (parts sharing an id lose mutual collision, rare when far apart), or a `filterContactPair` hook comparing part ids if that proves wrong.
   Group bit budget (16 membership + 16 filter bits) is shared: e.g. bit 0 structure, bit 1 debris, bit 2 grace (Rapier notes), the remaining bits for `P` part ids.
@@ -195,7 +197,7 @@ Each chunk of a *bendable part* (steel/aluminium panel, post, rail, door; rubber
 Never run a hull algorithm per update. **Fixed-topology hull**:
 1. **Hull input = the mesh vertices the cell influences**, not a separate proxy set. Per chunk keep a vertex list `V_c = { v : w_c(v) > 0 }`
    built from the skin weights of section 4 (any influence counts). The hull is bigger than the cell and overlaps its neighbours' hulls; that is accepted.
-   Overlap handling (to be tested in M1, see Rapier notes below): colliders of one body never collide with each other, and fixed-fixed pairs
+   Overlap handling (verified in M1, see Rapier notes below): colliders of one body never collide with each other, and fixed-fixed pairs
    generate no contacts, so the intact structure and each island are safe. Cross-body overlap right after a split is the risk.
    Because seam vertices are duplicated per side and weights drop across a broken bond, `V_c` never contains vertices from the far side of a crack and
    already includes the new cut face: the collider closes at the fracture with no extra logic. On a break, rebuild `V_c` only for the chunks whose
@@ -252,7 +254,7 @@ Principle: the frame never waits on destruction work. Everything below is a *lat
 - Every kernel is a pure function over typed arrays (no classes in hot loops, no allocation per call, SoA layout; matches the repo conventions), so it runs unchanged in main, a worker or WASM.
 
 **Faster code: AssemblyScript / Porffor / Javy (assessment)**
-- **AssemblyScript (AS): the only one worth planning for.** TypeScript-like syntax compiled to WASM, Float64 and SIMD (`v128`) available, typed-array style memory, small output. Targets: sparse block mat-vec and 6x6 block ops in PCG,
+- **AssemblyScript (AS): the only one worth planning for.** TypeScript-like syntax compiled to WASM, Float64 and SIMD (`v128`) available, typed-array style memory, small output. Targets: hot solver kernels (if the external solver is TS),
   chunk-pose/skin CPU kernels, hull refit (directional extremes + convexity check), Voronoi clipping. Caveats: it is a TS *subset* (no closures over locals, no structural typing, limited generics), SIMD f64 is only 2 lanes
   (so the f64 solver gains are modest; do not drop to f32, the Float64 lesson applies to stiff solves), and threading with shared memory is weakly supported (use one WASM instance per worker instead).
   Honest expectation: 1.2-3x over well-written V8 typed-array loops, more only for SIMD-friendly kernels. **Measure the TS version first** (repo rule); port only kernels that profile hot.
@@ -262,11 +264,10 @@ Principle: the frame never waits on destruction work. Everything below is a *lat
 - **How we keep the option cheap**: kernels live in `kernels/` with a TS reference and, when needed, an AS build behind the same signature `(memory views, offsets, counts) -> void`.
   One differential test runs both implementations on random inputs (tolerance 1e-9 in f64) and a micro-benchmark records the speed ratio in the notes, so a port only lands with a measured gain.
 
-## Rapier overlap notes (test in M1 before building on them)
+## Rapier overlap notes (verified in M1, `tests/rapier.test.ts`, NOTES "Rapier API facts")
 - Same-body colliders: no contacts between them (compound is safe). Fixed-vs-fixed: no contacts by default.
-- Jointed bodies: `joint.setContactsEnabled(false)` for the rebar-dangling case.
-- Gap: a freshly detached island overlaps the remaining structure and its sibling islands at the crack. Active contacts would push out violently
-  (AGENTS lesson: cap depenetration). Plan: put new islands in a temporary collision group that ignores their former neighbours,
+- Jointed bodies: `joint.setContactsEnabled(false)` for the rebar-dangling case and directly jointed chain pairs (4b).
+- Gap: a freshly detached island overlaps the remaining structure and its sibling islands at the crack. Active contacts would push out violently. Plan: put new islands in a temporary collision group that ignores their former neighbours,
   and restore the normal group once separated (cheap AABB/distance check per island, or after a fixed time). Collision groups are per collider,
   not per pair; if a pair rule is needed use physics hooks (`filterContactPair`), which cost a JS call per pair, so keep that as the fallback.
 - Chunks of a debris island that later re-fractures overlap too; the same grace group applies.
@@ -274,20 +275,20 @@ Principle: the frame never waits on destruction work. Everything below is a *lat
 ## Milestones
 
 **M1 Skeleton.** `ChunkModel`, a box/brick-grid generator (bonds from face overlap), Rapier harness with the backend interface,
-the `Material` table with presets (section 2b), project setup (above), debug render (chunk colors, bond lines coloured by ratio), face tags + surface flag, and the culled two-material render (section 6) from the start, since it shapes the index buffers. *No Voronoi needed to proceed.*
+the `Material` table with presets (section 2b), project setup (above), debug render (chunk colors, bond lines intact/broken; ratio colouring returns in M3b), face tags + surface flag, and the culled two-material render (section 6) from the start, since it shapes the index buffers. *No Voronoi needed to proceed.*
 **M2 Bond solver** — *removed 2026-11-14 (replaced by an external solver, section 2)*. Was: (headless, written as pure typed-array kernels in `kernels/`, section 7, with a micro-benchmark for the AS decision): axial bar vs `FL/(EA)`; cantilever vs Euler-Bernoulli; free island equilibrium; warm-start speed-up; local effect of a break; no per-solve allocation. Measure PCG iterations at ~1000 chunks.
 **M3 Core loop.** Worker + tier 0, component labeling, island handoff to Rapier. Done when removing a wall drops the dependents instantly. (Tier 1 stress/damage, failure ratios, impact loads and the material matrix test were removed with the solver; they come back with the external solver.)
 **M3b External structure solver integration** (when available): wire it into `IntegrityCore` per the section 2 contract; restore impact loads, overload-driven breaks, the material matrix test, and the stress/damage debug views.
-**M4 Skinning + deformation** (sections 4, 4b): fake offsets for `offsets` materials (impact dents, ring cracks); `joints` materials (steel panels/posts) as joint chains with the promotion handshake, plasticity by rest-target update, skinned from body poses. Tests: cantilever sag vs Euler-Bernoulli (expect some error; record it), permanent set after unload, fracture removes the joint and separates bodies, stability over 10 s.
+**M4 Skinning + deformation** (sections 4, 4b): fake offsets for `offsets` materials (impact dents, ring cracks); `joints` materials (steel panels/posts) as joint chains with the promotion handshake (impact/scripted until M3b), plasticity by rest-target update, skinned from body poses. Tests: cantilever sag vs Euler-Bernoulli (expect some error; record it), permanent set after unload, fracture removes the joint and separates bodies, stability over 10 s.
 **M5 Hull refit** (section 5) with the tier A/B toggle and budget GUI.
 **M6 Voronoi (non-priority):** per site clip the element's convex volume by bisector planes of its k nearest sites; the clipped polygon on each plane is the bond face, so adjacency/area/moments come free. Graded density, Poisson-disk sites. Concave buildings are built from convex elements (columns, slabs, panels around openings), each fractured in its own volume, bonded by coplanar face overlap. Blender route: any splitter -> glTF, one node per chunk + `extras`; importer builds bonds by AABB overlap + coplanar opposite-normal face clipping. Tests: volumes sum to the source (1e-9), symmetric adjacency.
 **M7 Game scene + perf** (frame-budget caps and queues from section 7, worker/SAB upgrades and AS ports only where profiling justifies them): level, wrecking ball/explosive, GUI, debris cap + despawn/merge of tiny far pieces, profiling before optimizing.
 
 ## Risks
 1. External structure solver integration: data contract (section 2), cost per tick under the frame budget, and how its outputs feed 4/4b (promotion, offsets).
-2. Joint-chain plasticity (4b) is the least proven part: stiffness/stability of iterative joints, the rest-target update, and the promotion/demotion handshake with the integrity worker. Validate on a cantilever first.
+2. Joint-chain plasticity (4b) is the least proven part: the rest-target update and the promotion/demotion handshake with the integrity worker. Joint stiffness/stability was validated on a cantilever in the M4 spike (NOTES); exaggerated sag (~200x Euler-Bernoulli) is the accepted cost.
    Related: three deformation sources (static solve, fake offsets, joint chains) must agree on the render pose at promotion/demotion; test for pops.
 3. (If the external solver is a small-displacement linear solve) no P-delta: slender columns won't buckle by themselves; add an Euler-load check per column if the game needs it.
-4. Rapier JS API details (convexMesh, setShape, contact-force events, re-parenting) must be checked against the installed version in M1.
+4. Rapier JS API details: re-parenting (absent), contact-force events, per-axis motors (spherical only) verified in M1/M4 (NOTES); still open: does `convexMesh` with indices skip quickhull, `setShape` cost (M5).
 5. Overlapping hulls (`w > 0` influence): cross-body overlap after splits (grace group, Rapier notes) and chain self-collision (4b) are the practical hazards; solver is Float64 but Rapier/GPU are Float32, so keep poses relative to the island/structure origin to limit precision loss on large levels.
 6. Collider recreation on detach (hundreds of colliders in one frame): budget/spread across frames if it spikes.

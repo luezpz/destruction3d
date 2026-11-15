@@ -36,4 +36,4 @@ Real-time structural destruction layer on top of Rapier (rigid bodies) + three.j
 Each milestone's tests are listed in PLAN.md "Milestones" and per-section "Tests:" lines — they are acceptance criteria.
 
 ## Known risks to keep in mind (PLAN "Risks")
-External structure solver integration (PLAN §2 contract); joint-chain stability (4b); no P-delta buckling; Rapier JS API details unverified (convexMesh, setShape, contact-force events, re-parenting, 6-axis motors) — verify against the installed version and record results in `NOTES.md`.
+External structure solver integration (PLAN §2 contract); joint-chain stability (4b); no P-delta buckling; Rapier JS API details still unverified (does `convexMesh` skip quickhull, `setShape` cost) — verify against the installed version and record results in `NOTES.md`.
