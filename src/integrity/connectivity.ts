@@ -55,6 +55,27 @@ export class Connectivity {
     return comps;
   }
 
+  /**
+   * Full components (no support early-exit) of both ends of each bond, deduplicated: component k is
+   * outChunks[outOffset[k] .. outOffset[k+1]). For breaks inside floating (already detached) parts, where any split must be found.
+   * @returns number of components.
+   */
+  collectComponents(bonds: Uint32Array, nBonds: number, alive: Uint8Array, outChunks: Uint32Array, outOffset: Uint32Array): number {
+    const s = ++this.stamp;
+    let comps = 0, written = 0;
+    outOffset[0] = 0;
+    for (let q = 0; q < nBonds; q++) {
+      for (let side = 0; side < 2; side++) {
+        const start = side ? this.bondB[bonds[q]] : this.bondA[bonds[q]];
+        if (this.mark[start] === s) continue;
+        this.bfs(start, s, alive, outChunks, written); // floating parts hold no support and no grounded stamp s: full BFS
+        written += this.lastSize;
+        outOffset[++comps] = written;
+      }
+    }
+    return comps;
+  }
+
   private lastSize = 0;
 
   /** BFS over alive bonds from `start`, writing visited chunks into out[at..]; stops early at a support/grounded chunk. */

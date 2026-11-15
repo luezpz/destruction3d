@@ -8,7 +8,7 @@ import { brickWallBoxes, gridBoxes } from './model/generators';
 
 export const SCENES = [
   'concrete wall', 'brick wall', 'glass pane', 'concrete block 6^3',
-  'slab on columns', 'tower', 'bridge', 'cantilever balcony', 'house', 'brick gate', 'ice pillars',
+  'slab on columns', 'tower', 'bridge', 'cantilever balcony', 'house', 'brick gate', 'ice pillars', 'steel plate',
 ] as const;
 export type SceneName = (typeof SCENES)[number];
 
@@ -50,6 +50,8 @@ export function buildScene(name: SceneName, table: MaterialTable): DemoScene {
       const boxes = brickWallBoxes({ bricksPerRow: 12, rows: 30, brick: [0.22, 0.075, 0.105], origin: [-1.32, 0, -0.0525], material: id('brick'), supportBottom: true });
       return gen(boxes, [2.5, 1.8, 3.5], [0, 1, 0], () => mortar);
     }
+    case 'steel plate': // deform 'joints': skinned (multi-influence) vertices; rigid until joint chains land (M4)
+      return gen(block([-1, 0, -0.015], [10, 10, 1], [0.2, 0.2, 0.03], id('steel')), [2.2, 1.5, 3], [0, 1, 0]);
     case 'glass pane':
       return gen(block([-0.9, 0, -0.005], [12, 10, 1], [0.15, 0.15, 0.01], id('glass')), [1.8, 1.2, 2.4], [0, 0.75, 0]);
     case 'concrete block 6^3':

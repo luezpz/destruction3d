@@ -38,7 +38,9 @@ export class WorkerIntegrity implements IntegrityClient {
     const init: InitRequest = { type: 'init', model, table };
     this.worker.postMessage(init);
   }
-  request(req: TickRequest): void { this.worker.postMessage(req, [req.remove.buffer as ArrayBuffer]); }
+  request(req: TickRequest): void {
+    this.worker.postMessage(req, req.impacts ? [req.remove.buffer as ArrayBuffer, req.impacts.buffer as ArrayBuffer] : [req.remove.buffer as ArrayBuffer]);
+  }
   poll(): TickReply | null { const r = this.reply; this.reply = null; return r; }
   dispose(): void { this.worker.terminate(); }
 }

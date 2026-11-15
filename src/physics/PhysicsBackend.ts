@@ -11,6 +11,8 @@ export interface IslandChunk {
   points: Float32Array; // (3p,)
   indices: Uint32Array; // (3t,) hull triangles; supplied so no quickhull runs
   translation: [number, number, number];
+  /** Collider rotation (quat x,y,z,w) relative to the body; default identity. Set for deformed (demoted) chunks. */
+  rotation?: [number, number, number, number];
 }
 
 export interface IslandDesc {
@@ -73,6 +75,12 @@ export interface PhysicsBackend {
   /** Moves the motor rest angles of a spring joint (plastic set); stiffness/damping as at creation. */
   setSpringTarget(j: JointHandle, target: [number, number, number], stiffness: [number, number, number], damping: [number, number, number]): void;
   removeJoint(j: JointHandle): void;
+  /** Absolute velocity damping (1/s): damps whole-body modes joint-relative damping leaves (joint chains, PLAN §4b). */
+  setBodyDamping(b: BodyHandle, linear: number, angular: number): void;
+  /** Puts bodies to sleep now (contacts/impulses wake them); for parts our own rest test says are settled. */
+  sleepBodies(bodies: ArrayLike<BodyHandle>): void;
+  /** Moves a joint's body-local anchors (translational plastic set). */
+  setJointAnchors(j: JointHandle, anchorA: [number, number, number], anchorB: [number, number, number]): void;
   /** Writes pose (x, y, z, qx, qy, qz, qw) of each body into out (7 floats each). */
   readBodyPoses(bodies: ArrayLike<BodyHandle>, out: Float32Array): void;
   /** Writes x(3) q(4) linvel(3) angvel(3) of each body (13 doubles each, world frame) for joint springs (PLAN §4b). */
@@ -90,3 +98,6 @@ export function packGroups(membership: number, filter: number): number {
 
 /** Collision group bits (PLAN 4b budget): bit 0 structure, bit 1 debris, bit 2 grace; the rest for part ids. */
 export const GroupBit = { STRUCTURE: 1, DEBRIS: 2, GRACE: 4 } as const;
+/** Bits 3..15 tag joint-chain parts (`partId mod PART_BITS`); parts sharing a bit don't collide (rare, PLAN §4b). */
+export const PART_BIT0 = 3;
+export const PART_BITS = 13;

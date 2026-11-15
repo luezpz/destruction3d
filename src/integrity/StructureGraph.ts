@@ -20,6 +20,12 @@ export class StructureGraph {
   readonly detachedChunks: Uint32Array;
   readonly detachedOffset: Uint32Array;
   detachedCount = 0;
+  /** Components (after this call's breaks) of floating parts that lost a bond: floatChunks[floatOffset[k] .. [k+1]). A part split in two shows as two. */
+  readonly floatChunks: Uint32Array;
+  readonly floatOffset: Uint32Array;
+  floatCount = 0;
+  private readonly staticBroken: Uint32Array;
+  private readonly floatBroken: Uint32Array;
 
   constructor(readonly model: ChunkModel) {
     const n = model.chunkCount, m = model.bondCount;
@@ -31,22 +37,30 @@ export class StructureGraph {
     this.broken = new Uint32Array(m);
     this.detachedChunks = new Uint32Array(n);
     this.detachedOffset = new Uint32Array(n + 1);
+    this.floatChunks = new Uint32Array(n);
+    this.floatOffset = new Uint32Array(n + 1);
+    this.staticBroken = new Uint32Array(m);
+    this.floatBroken = new Uint32Array(m);
   }
 
   /**
-   * Removes bonds (scripted cuts, or breaks reported by a structure solver), then runs tier 0. Skips already-broken
-   * bonds and bonds of detached chunks (island re-fracture is not supported yet). @returns detached components.
+   * Removes bonds (scripted cuts, joint breaks, or breaks reported by a structure solver), then runs tier 0 on the static
+   * structure and collects the components of floating parts that lost bonds (island re-fracture). Skips already-broken bonds.
+   * @returns detached components.
    */
   removeBonds(bonds: ArrayLike<number>): number {
-    let nb = 0;
+    let nb = 0, ns = 0, nf = 0;
     for (let k = 0; k < bonds.length; k++) {
       const b = bonds[k];
-      if (!this.alive[b] || !this.attached[this.model.bondA[b]]) continue;
+      if (!this.alive[b]) continue;
       this.alive[b] = 0;
       this.broken[nb++] = b;
+      // both ends share the state: an alive bond never links an attached chunk to a detached one
+      if (this.attached[this.model.bondA[b]]) this.staticBroken[ns++] = b; else this.floatBroken[nf++] = b;
     }
     this.brokenCount = nb;
-    this.detachedCount = this.connectivity.findDetached(this.broken, nb, this.alive, this.detachedChunks, this.detachedOffset);
+    this.floatCount = this.connectivity.collectComponents(this.floatBroken, nf, this.alive, this.floatChunks, this.floatOffset);
+    this.detachedCount = this.connectivity.findDetached(this.staticBroken, ns, this.alive, this.detachedChunks, this.detachedOffset);
     const end = this.detachedOffset[this.detachedCount];
     for (let k = 0; k < end; k++) this.attached[this.detachedChunks[k]] = 0;
     return this.detachedCount;

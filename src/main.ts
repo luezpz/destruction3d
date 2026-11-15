@@ -1,5 +1,5 @@
 // Debug app: generated structure, culled outer/inner render, bond lines, Rapier, and the M3 core loop (DestructionSim):
-// scripted bond removals -> connectivity -> falling islands (no structure solver yet). Islands are placed on the CPU (placeChunk) until M4 skinning.
+// scripted bond removals -> connectivity -> falling islands (no structure solver yet). Chunks are skinned on the GPU from the pose texture (render/skinMaterial.ts).
 
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -13,7 +13,11 @@ import { packGroups } from './physics/PhysicsBackend';
 import { RapierBackend, initRapier } from './physics/RapierBackend';
 import { DestructionSim } from './sim/DestructionSim';
 import { InlineIntegrity, WorkerIntegrity } from './integrity/IntegrityClient';
-import { placeChunk } from './render/islandPose';
+import { writeIslandPoses } from './render/islandPose';
+import { buildBondAdjacency, BondAdjacency } from './kernels/bondAdjacency';
+import { buildSkinWeights, reweightBroken, SkinWeights } from './model/skinWeights';
+import { writeChunkPose, writeIdentityPoses } from './kernels/skin';
+import { createSkinTextures, SkinTextures, uploadDirtyWeights, writeSkinRanges } from './render/skinMaterial';
 import { SCENES, SceneName, buildScene } from './scenes';
 
 const ALL = packGroups(0xffff, 0xffff);
@@ -29,6 +33,8 @@ interface Loaded {
   /** brokenLog entries already revealed/coloured. */
   shownBroken: number;
   balls: { body: number; mesh: THREE.Mesh }[];
+  /** Skin state: render-side bond adjacency + alive copy (from brokenLog), weights, pose/entry textures. */
+  skin: { adj: BondAdjacency; alive: Uint8Array; sw: SkinWeights; tex: SkinTextures };
 }
 
 async function main(): Promise<void> {
@@ -63,13 +69,13 @@ async function main(): Promise<void> {
   const params = {
     scene: SCENES[0] as SceneName, outer: true, inner: true, bondLines: false, breakCount: 10, ballSpeed: 20, ballRadius: 0.25,
     // Sim (live unless noted "reload")
-    sync: false, paused: false, timeScale: 1, physicsHz: 60, substeps: 1,
-    g: 9.81, impactThreshold: 500, solverIterations: 4, pgsIterations: 1, // reload
+    sync: false, paused: false, timeScale: 1, physicsHz: 60, substeps: 4, // joint chains need 4 substeps + 16 iterations (NOTES "M4 joint spike")
+    g: 9.81, impactThreshold: 500, solverIterations: 16, pgsIterations: 1, // reload
   };
   const matScale: MaterialScale = { ...UNIT_SCALE };
   const perStrength: Record<string, number> = Object.fromEntries(MATERIAL_PRESETS.map((m) => [m.name, 1]));
   const stats = {
-    chunks: 0, surface: 0, bonds: 0, outerTris: 0, innerTris: 0, brokenBonds: 0, islands: 0,
+    chunks: 0, surface: 0, bonds: 0, outerTris: 0, innerTris: 0, brokenBonds: 0, islands: 0, joints: 0, brokenJoints: 0,
     mode: '', version: 0, simTickMs: '', replies: 0, latencySteps: 0,
   };
   let cur: Loaded | null = null;
@@ -90,7 +96,12 @@ async function main(): Promise<void> {
     camera.position.set(...demo.camera);
     controls.target.set(...demo.target);
     controls.update();
-    const meshes = createChunkMeshes(model, table, buildCullBuffers(model));
+    const adj = buildBondAdjacency(model.chunkCount, model.bondA, model.bondB, model.bondCount);
+    const alive = new Uint8Array(model.bondCount).fill(1);
+    const sw = buildSkinWeights(model, adj, alive);
+    const tex = createSkinTextures(model.chunkCount, sw);
+    writeIdentityPoses(tex.pose, model.chunkCount);
+    const meshes = createChunkMeshes(model, table, buildCullBuffers(model), sw, tex);
     const bonds = createBondLines(model);
     const physics = new RapierBackend({
       gravity: [0, -params.g, 0], impactThreshold: params.impactThreshold,
@@ -99,9 +110,8 @@ async function main(): Promise<void> {
     physics.createGround(0, ALL);
     const client = params.sync ? new InlineIntegrity(model, table) : new WorkerIntegrity(model, table);
     const sim = new DestructionSim(model, table, physics, { client });
-    (meshes.outer.geometry.getAttribute('position') as THREE.BufferAttribute).setUsage(THREE.DynamicDrawUsage);
     scene.add(meshes.outer, meshes.inner, bonds.lines);
-    cur = { model, meshes, bonds, broken: new Uint8Array(model.bondCount), physics, sim, shownBroken: 0, balls: [] };
+    cur = { model, meshes, bonds, broken: new Uint8Array(model.bondCount), physics, sim, shownBroken: 0, balls: [], skin: { adj, alive, sw, tex } };
     stats.mode = params.sync ? 'sync (inline)' : 'async (worker)';
     Object.assign(stats, {
       chunks: model.chunkCount, surface: surfaceChunkCount(model), bonds: model.bondCount,
@@ -130,30 +140,41 @@ async function main(): Promise<void> {
     cur.sim.removeBonds(bonds);
   }
 
-  /** Reveals faces of newly broken bonds, places island chunks from body poses, refreshes stats/colours. */
+  /** Reveals faces of newly broken bonds, re-weights the skin around them, writes island chunk poses, refreshes stats/colours. */
   function syncRender(l: Loaded): void {
     const { sim, meshes } = l;
-    let changed = false;
+    const { skin } = l;
+    const first = l.shownBroken;
     for (; l.shownBroken < sim.brokenTotal; l.shownBroken++) {
       const b = sim.brokenLog[l.shownBroken];
       l.broken[b] = 1;
+      skin.alive[b] = 0;
       revealBondFaces(meshes, b);
-      changed = true;
     }
-    const posAttr = meshes.outer.geometry.getAttribute('position') as THREE.BufferAttribute;
-    const nrmAttr = meshes.outer.geometry.getAttribute('normal') as THREE.BufferAttribute;
+    const changed = l.shownBroken > first;
+    if (changed) {
+      reweightBroken(skin.sw, l.model, skin.adj, skin.alive, sim.brokenLog.subarray(first, l.shownBroken));
+      if (skin.sw.dirtyCount) {
+        uploadDirtyWeights(skin.tex, skin.sw);
+        writeSkinRanges(meshes.skinRange.array as Uint32Array, skin.sw);
+        meshes.skinRange.needsUpdate = true;
+      }
+    }
     for (const isl of sim.handoff.islands) {
+      if (isl.removed) continue;
       l.physics.readBodyPoses([isl.body], pose);
-      for (const c of isl.chunks) placeChunk(l.model, c, pose, 0, isl.com, posAttr.array as Float32Array, nrmAttr.array as Float32Array);
+      writeIslandPoses(skin.tex.pose, isl.chunks, pose, 0, isl.local, l.model.chunkPos);
     }
-    if (sim.handoff.islands.length) {
-      posAttr.needsUpdate = true; nrmAttr.needsUpdate = true;
-      for (const m of [meshes.outer, meshes.inner]) m.geometry.computeBoundingSphere();
-    }
+    // demoted (frozen deformed) chunks: static pose written once
+    const h = sim.handoff;
+    for (const c of h.staticPoseDirty) writeChunkPose(skin.tex.pose, c, h.setPos, 3 * c, h.setQ, 4 * c, l.model.chunkPos, 3 * c);
+    if (sim.handoff.islands.length || h.staticPoseDirty.length) skin.tex.poseTex.needsUpdate = true;
+    h.staticPoseDirty.length = 0;
     if (changed) refreshColors(l);
     stats.innerTris = meshes.cull.innerCount / 3;
     stats.brokenBonds = sim.brokenTotal;
     stats.islands = sim.handoff.islands.length;
+    stats.joints = sim.chains.aliveJoints; stats.brokenJoints = sim.chains.brokenJoints;
     Object.assign(stats, { version: sim.version, replies: sim.replies, latencySteps: sim.replyLatencySteps });
   }
 
@@ -267,7 +288,7 @@ async function main(): Promise<void> {
   });
 
   // Debug handle for automated browser checks (console: demo.cur.sim.brokenTotal, ...).
-  (window as unknown as { demo: unknown }).demo = { get cur() { return cur; }, params, stats, load, throwBall, breakRandom, removePickedChunk, ndc };
+  (window as unknown as { demo: unknown }).demo = { get cur() { return cur; }, params, stats, matScale, load, throwBall, breakRandom, removePickedChunk, ndc };
 
   /** One fixed step: `substeps` physics + integrity ticks of dt/substeps (Rapier auto-drains events per step). */
   function stepOnce(l: Loaded): void {

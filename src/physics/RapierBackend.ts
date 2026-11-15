@@ -46,6 +46,7 @@ export class RapierBackend implements PhysicsBackend {
   private chunkDesc(chunk: IslandChunk, groups: number): RAPIER.ColliderDesc {
     const desc = RAPIER.ColliderDesc.convexMesh(chunk.points, chunk.indices);
     if (!desc) throw new Error(`convexMesh failed for chunk ${chunk.chunkId}`);
+    if (chunk.rotation) desc.setRotation({ x: chunk.rotation[0], y: chunk.rotation[1], z: chunk.rotation[2], w: chunk.rotation[3] });
     return desc
       .setTranslation(chunk.translation[0], chunk.translation[1], chunk.translation[2])
       .setDensity(0) // mass comes from setAdditionalMassProperties: overlapping hulls would double count
@@ -153,6 +154,22 @@ export class RapierBackend implements PhysicsBackend {
   setSpringTarget(j: JointHandle, target: [number, number, number], stiffness: [number, number, number], damping: [number, number, number]): void {
     const joint = this.sphericalJoint(j);
     for (let i = 0; i < 3; i++) joint.configureMotorPosition(RAPIER.JointAxis.AngX + i, target[i], stiffness[i], damping[i]);
+  }
+
+  setBodyDamping(b: BodyHandle, linear: number, angular: number): void {
+    const body = this.world.getRigidBody(b);
+    body.setLinearDamping(linear);
+    body.setAngularDamping(angular);
+  }
+
+  setJointAnchors(j: JointHandle, anchorA: [number, number, number], anchorB: [number, number, number]): void {
+    const joint = this.world.getImpulseJoint(j);
+    joint.setAnchor1({ x: anchorA[0], y: anchorA[1], z: anchorA[2] });
+    joint.setAnchor2({ x: anchorB[0], y: anchorB[1], z: anchorB[2] });
+  }
+
+  sleepBodies(bodies: ArrayLike<BodyHandle>): void {
+    for (let i = 0; i < bodies.length; i++) this.world.getRigidBody(bodies[i]).sleep();
   }
 
   removeJoint(j: JointHandle): void {

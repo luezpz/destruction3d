@@ -39,11 +39,17 @@ describe('tier 0 connectivity', () => {
     expect([g.detachedOffset[1] - g.detachedOffset[0], g.detachedOffset[2] - g.detachedOffset[1]]).toEqual([2, 2]);
   });
 
-  it('skips already-broken bonds and bonds of detached chunks', () => {
-    const g = new StructureGraph(cantilever(4, 0.1));
-    g.removeBonds([0]);
-    expect(g.removeBonds([0, 2])).toBe(0); // bond 0 gone, bond 2 belongs to debris
-    expect(g.brokenCount).toBe(0);
-    expect(g.alive[2]).toBe(1);
+  it('skips already-broken bonds; breaks inside floating parts are processed and report the split pieces', () => {
+    const g = new StructureGraph(cantilever(4, 0.1)); // bonds k: chunk k - chunk k+1
+    g.removeBonds([0]); // {1,2,3,4} floats
+    expect(g.removeBonds([0, 2])).toBe(0); // bond 0 already gone; bond 2 is inside the floating part: no new detach
+    expect(Array.from(g.broken.subarray(0, g.brokenCount))).toEqual([2]);
+    expect(g.alive[2]).toBe(0);
+    expect(g.floatCount).toBe(2);
+    const comp = (k: number) => Array.from(g.floatChunks.subarray(g.floatOffset[k], g.floatOffset[k + 1])).sort();
+    expect([comp(0), comp(1)]).toEqual([[1, 2], [3, 4]]);
+    // a redundant break inside a floating ring would report one component (no split); here: cut the end of {3,4}
+    g.removeBonds([3]);
+    expect(g.floatCount).toBe(2); // {3} and {4}
   });
 });

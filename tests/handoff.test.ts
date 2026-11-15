@@ -44,5 +44,47 @@ describe('island handoff', () => {
     expect(y).toBeGreaterThan(2.45);
     physics.dispose();
   });
+
+  it('a break inside a falling island splits it into bodies at the current pose (no pop)', () => {
+    const m = portal(), t = new StructureGraph(m);
+    const physics = new RapierBackend({ gravity: [0, 0, 0] });
+    const h = new IslandHandoff(m, table, physics);
+    const cut = [] as number[];
+    for (let b = 0; b < m.bondCount; b++) if (m.bondCentroid[3 * b + 1] === 2) cut.push(b);
+    t.removeBonds(cut);
+    const [id] = h.detach(t.detachedChunks, t.detachedOffset, t.detachedCount);
+    // spin + move the slab, then break its middle-right bond (chunks 5-6)
+    const rb = physics.world.getRigidBody(h.islands[id].body);
+    rb.setLinvel({ x: 1, y: 0, z: 0 }, true); rb.setAngvel({ x: 0, y: 0, z: 2 }, true);
+    for (let k = 0; k < 20; k++) physics.step(1 / 60);
+    const before = new Float32Array(7);
+    physics.readBodyPoses([h.islands[id].body], before);
+    let b56 = -1;
+    for (let b = 0; b < m.bondCount; b++) if ((m.bondA[b] === 5 && m.bondB[b] === 6) || (m.bondA[b] === 6 && m.bondB[b] === 5)) b56 = b;
+    t.removeBonds([b56]);
+    expect(t.floatCount).toBe(2);
+    const ids = h.refracture(t.floatChunks, t.floatOffset, t.floatCount);
+    expect(ids.length).toBe(2);
+    expect(h.islands.map((i) => Array.from(i.chunks).sort())).toEqual([[4, 5], [6]]);
+    // world position of chunk 6's centre is unchanged: x_b + R_b (c - com) before == after
+    const rotate = (q: ArrayLike<number>, v: number[]) => {
+      const [x, y, z, w] = [q[3], q[4], q[5], q[6]];
+      const tx = 2 * (y * v[2] - z * v[1]), ty = 2 * (z * v[0] - x * v[2]), tz = 2 * (x * v[1] - y * v[0]);
+      return [v[0] + w * tx + (y * tz - z * ty), v[1] + w * ty + (z * tx - x * tz), v[2] + w * tz + (x * ty - y * tx)];
+    };
+    const c6 = [m.chunkPos[18], m.chunkPos[19], m.chunkPos[20]];
+    const oldCom = [1.5, 2.5, 0.5];
+    const wOld = rotate(before, c6.map((v, i) => v - oldCom[i])).map((v, i) => v + before[i]);
+    const isl6 = h.islands[h.islandOf[6]], after = new Float32Array(7);
+    physics.readBodyPoses([isl6.body], after);
+    const t6 = isl6.local.subarray(7 * h.slotOf[6], 7 * h.slotOf[6] + 3);
+    const wNew = rotate(after, Array.from(t6)).map((v, i) => v + after[i]);
+    for (let i = 0; i < 3; i++) expect(wNew[i]).toBeCloseTo(wOld[i], 4);
+    // the piece keeps the rigid velocity field: angular velocity carried over
+    const st = new Float64Array(13);
+    physics.readBodyStates([isl6.body], st);
+    expect(st[12]).toBeCloseTo(2, 3);
+    physics.dispose();
+  });
 });
 

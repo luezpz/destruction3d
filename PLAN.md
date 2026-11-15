@@ -25,7 +25,7 @@ renderer: pose DataTexture + many-bone skinning shader
           pose sources merged on the main thread: static/"offsets" chunks from the worker, chunks on dynamic bodies
           (debris islands, promoted joint chains) from Rapier (body pose o local)
 ```
-`*` = not wired yet: impact loads and the solver arrive in M3b, worker chunk poses with fake offsets in M4. Today the worker gets removals and returns breaks + detached components.
+`*` = not wired yet: impact loads and the solver arrive in M3b, worker chunk poses with fake offsets in M4. Today the worker gets removals and returns breaks + detached components, plus the components of floating parts that lost bonds (island re-fracture).
 Worker messages use double-buffered transferable typed arrays (no SharedArrayBuffer, so no COOP/COEP headers needed).
 A 1-3 frame latency is fine for fake destruction.
 
@@ -153,11 +153,11 @@ with a 1.6-cell support touches 8 cells (27 with a wider one); a Voronoi cell ha
   `x_i = x_i0 + amplify * u_el,i + o_i`, `q_i = exp(th_i + amplify * th_el,i) q_i0` (both world-frame rotation vectors, small), with `u_el` the structure solver's displacement (sagging slabs; 0 until the external solver provides it) and `o, th` from impacts
   (the total offset is clamped to `o_max` so the render pose never strays far from the collider):
   - Impact at point `p`, unit direction `n`, impulse `J`: for chunks within graph radius `R`, `do_i = s_sat(J) phi(g_i/R) n`, `dth_i = k_t phi(g_i/R) (n x (c_i - p)) / R`,
-    where `g_i` = bond-graph distance from the hit chunk, `phi(s) = (1 - s^2)^3`, `s_sat = o_max (1 - exp(-J/J_ref))` (saturates, so repeated hits dent less), `o_max` ~5-10% of chunk size.
+    where `g_i` = bond-graph distance from the hit chunk, `phi(s) = (1 - s^2)^3`, `s_sat = o_max (1 - exp(-J/J_ref))` (saturates, so repeated hits dent less; implemented as the increment along this curve of the impulse accumulated per hit chunk, so one contact split over many substep events dents like one hit), `o_max` ~5-10% of chunk size.
   - Cracks fall out of the offset gradient: per bond, opening `w_b = (o_j - o_i) . n_b` (shear slip from the tangential part); `d_b = max(d_b, w_b / w_max)`.
     The dent centre moves as a block and the ring of bonds around it takes the offset difference, so ring cracks and revealed inner faces (section 6) appear around impacts; a bond that
     reaches `d >= 1` really breaks (section 2). Offsets are permanent.
-  - Colliders stay at the rest pose (offsets <= `o_max`); a chunk that detaches takes its current visual pose as its body pose. Runs in the worker (`IntegrityCore`), which keeps the per-bond damage `d_b` and will return chunk poses with its breaks (not yet: today it returns breaks/components only).
+  - Colliders stay at the rest pose (offsets <= `o_max`); a chunk that detaches takes its current visual pose as its body pose. Runs in the worker (`IntegrityCore` + `DentField`), which keeps the per-bond damage `d_b` and returns changed chunk poses (`o`, `th`) with its breaks. Parameters per material in the `dent` record; crack measure is `|o_j - o_i|` (opening + slip); contact point = hit chunk centre.
   - `deform: 'joints'` materials (metals, rubber, soft plastics) get real deformation (section 4b). Real deformation of brittle materials isn't worth it: strains before cracking are millimetres.
   - `deform: 'none'` (glass): no dent; with `propagation > 0` it shatters instead.
 - Candy-wrapper from linear blending only on strong twist; switch to dual quaternions if it shows.
@@ -176,20 +176,24 @@ Each chunk of a *bendable part* (steel/aluminium panel, post, rail, door; rubber
 - Error `phi: (3,)` from body poses each step: `phi = log(q0^-1 q_a^-1 q_b)` (relative rotation vs rest `q0`, in the parent frame).
 - Plasticity = rest-shape update on the motor targets (VIPER-style): `[0, 0, 0, Tq, M1, M2]` from `M = k phi` through the corner formulas of section 2b (von Mises at the worst corner);
   if `sigma > sigma_y`, `q0 <- q0 exp((1 - sigma_y/sigma) phi)`, then push the new targets to the motors. Each step, not per frame; hardening via `sigma_y + H eps_p`.
+  **Rest-state bake**: in 2D parts (grids with loops) per-joint targets become mutually incompatible with the locked anchors (doubly curved dents need in-plane stretch),
+  so the part stays strained and the solver jitters forever. Only parts with loops are baked (a tree has no incompatibility, and baking a loaded part drops its load and ratchets). When a part stops yielding for ~0.1 s, its current shape becomes the stress-free rest (all targets = phi, anchors moved together);
+  residual elastic stress at that moment becomes permanent set. (Continuous anchor slip was tried and pumps energy; NOTES "Joint-chain perf".)
 - Fracture: plastic strain above `epsPlasticMax`, or filtered moment-based ratio > 1 -> remove the joint. The two sides are already separate bodies, so
   **no island labeling is needed for these parts**.
 - Poses come for free (body transforms), colliders follow the bodies, and large bends are exact. Tier A (section 5) is automatic here; tier B adds shape change.
-- Weaknesses: (1) stiff chains of iterative joints sag/stretch (more solver iterations, short chains, mass ratios <~10); (2) the part is awake while deforming, so sleep it
-  once `|phi|` change is tiny; (3) loads from the *static* structure (a slab resting on a steel beam) are not seen by the dynamic chain.
+- Weaknesses: (1) stiff chains of iterative joints sag/stretch (more solver iterations, short chains, mass ratios <~10); (2) the part is awake while deforming and an awake 90-body plate costs ~10-15 ms/frame in Rapier: absolute body damping
+  (2/s linear while anchored, 2/s angular) settles it in ~2 s and our rest test sleeps it (joint damping is relative and leaves whole-part modes ringing); (3) loads from the *static* structure (a slab resting on a steel beam) are not seen by the dynamic chain.
   Therefore scope: parts that mostly carry their own weight and impacts. For a structural beam, the external solver provides the interface
   bond forces as external forces on the chain's end bodies (`applyWrenches`), or the beam stays on the static solve with damage only (no large bend).
 - Promotion: a `joints` element lives in the static graph until impacted (or scripted) or its solver ratio exceeds ~0.7 (M3b), then its chunks are promoted to dynamic bodies + joints
-  (fixed body anchors for supported ends). Demotion when at rest for a while (current poses become the new rest state, plastic offsets kept).
+  (fixed body anchors for supported ends). Demotion when at rest for a while (~1 s, anchored, not yielding): bodies become static colliders at their current pose (a per-chunk static pose replaces the rest pose; islands carry per-chunk body-frame poses so later detaches don't pop), plastic targets/strain are kept per bond and restored on re-promotion.
 - **Who runs it**: the joint-error/plasticity/fracture loop needs the body poses, so it runs where Rapier runs (main thread, or the physics worker if split out).
   Handshake with the integrity worker: on promotion the worker removes those chunks from the static solve and treats the interface chunks as supports (the chain carries its own load);
-  on a joint break the main side sends the bond as a removal (same path as scripted cuts), on demotion a `demote` message, so the worker's graph, weights and culling stay in sync.
+  on a joint break the main side sends the bond as a removal (same path as scripted cuts), on demotion no message is needed now (promotion never left the worker's graph; bonds stay intact) — the external solver (M3b) will need the frozen poses then, so the worker's graph, weights and culling stay in sync.
 - **Self-collision**: each chunk of a chain is its own body with an overlapping hull (section 5). `setContactsEnabled(false)` only covers directly jointed pairs, and collision groups are 16 bits,
   so use `partId mod P` as the group (parts sharing an id lose mutual collision, rare when far apart), or a `filterContactPair` hook comparing part ids if that proves wrong.
+  Implemented: membership = the part bit only (a shared debris bit would re-enable self-contacts), filter = all but the part bit; a body that loses its last joint returns to debris groups.
   Group bit budget (16 membership + 16 filter bits) is shared: e.g. bit 0 structure, bit 1 debris, bit 2 grace (Rapier notes), the remaining bits for `P` part ids.
 
 ## 5. Fast convex hull refit (materials with `hull: 'refit'` only; the rest never refit)

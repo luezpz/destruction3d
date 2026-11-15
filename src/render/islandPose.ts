@@ -1,29 +1,22 @@
-// CPU rigid placement of a chunk's render vertices (debug path until M4's pose texture + TSL skinning).
-// Headless (no three.js). World vertex p = x_b + q_b (r_c + v), normal n' = q_b n, where x_b, q_b = body pose,
-// r_c = chunk rest pos - island COM (body-local), v / n = chunk-local rest vertex / normal.
+// Chunk poses of a rigid island from its body pose, written into the skin pose buffer (PLAN §4 "Pose per chunk"). Headless.
+// Chunk pose = body * local: x_c = x_b + q_b t, q_c = q_b r (t, r = chunk pose in the body frame, Island.local).
 
-import type { ChunkModel } from '../model/ChunkModel';
+import { writeChunkPose } from '../kernels/skin';
+import { quatMul, quatRotate } from '../model/quat';
 
-/** Rotates (x, y, z) by unit quaternion q = (qx, qy, qz, qw) at q[o..o+4) and writes to out[k..k+3). */
-function rotate(q: ArrayLike<number>, o: number, x: number, y: number, z: number, out: Float32Array, k: number, tx: number, ty: number, tz: number): void {
-  const qx = q[o], qy = q[o + 1], qz = q[o + 2], qw = q[o + 3];
-  // v' = v + 2 qw (u x v) + 2 u x (u x v), u = (qx, qy, qz)
-  const cx = 2 * (qy * z - qz * y), cy = 2 * (qz * x - qx * z), cz = 2 * (qx * y - qy * x);
-  out[k] = tx + x + qw * cx + (qy * cz - qz * cy);
-  out[k + 1] = ty + y + qw * cy + (qz * cx - qx * cz);
-  out[k + 2] = tz + z + qw * cz + (qx * cy - qy * cx);
-}
+const x = new Float64Array(3), q = new Float64Array(4);
 
 /**
- * Writes chunk c's vertices/normals into pos/nrm (3V,) for body pose (x, y, z, qx, qy, qz, qw) at pose[o..o+7)
- * and island COM `com` (rest, world). Float64 rest data -> Float32 GPU buffers here only.
+ * Writes the skin pose of each chunk in `chunks` for body pose (x, y, z, qx, qy, qz, qw) at body[o..o+7).
+ * @param pose (8n,) skin pose buffer. @param local (7k,) chunk poses in the body frame (same order as chunks).
+ * @param restPos (3n,) rest chunk centres (ChunkModel.chunkPos).
  */
-export function placeChunk(model: ChunkModel, c: number, pose: ArrayLike<number>, o: number, com: ArrayLike<number>,
-  pos: Float32Array, nrm: Float32Array): void {
-  const rx = model.chunkPos[3 * c] - com[0], ry = model.chunkPos[3 * c + 1] - com[1], rz = model.chunkPos[3 * c + 2] - com[2];
-  for (let v = model.renderVertOffset[c]; v < model.renderVertOffset[c + 1]; v++) {
-    const k = 3 * v;
-    rotate(pose, o + 3, rx + model.renderPos[k], ry + model.renderPos[k + 1], rz + model.renderPos[k + 2], pos, k, pose[o], pose[o + 1], pose[o + 2]);
-    rotate(pose, o + 3, model.renderNormal[k], model.renderNormal[k + 1], model.renderNormal[k + 2], nrm, k, 0, 0, 0);
+export function writeIslandPoses(pose: Float32Array | Float64Array, chunks: ArrayLike<number>, body: ArrayLike<number>, o: number,
+  local: Float64Array, restPos: Float64Array): void {
+  for (let k = 0; k < chunks.length; k++) {
+    quatRotate(body, o + 3, local, 7 * k, x);
+    x[0] += body[o]; x[1] += body[o + 1]; x[2] += body[o + 2];
+    quatMul(body, o + 3, local, 7 * k + 3, q);
+    writeChunkPose(pose, chunks[k], x, 0, q, 0, restPos, 3 * chunks[k]);
   }
 }

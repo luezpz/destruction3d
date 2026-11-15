@@ -22,12 +22,24 @@ export interface Material {
   propagation: number; // damage added to neighbour bonds on a break
   grain: { axis: [number, number, number]; strengthRatio: number } | null;
   deform: DeformMode;
+  /** Fake impact dents (PLAN §4, used when deform === 'offsets'). Lengths are fractions of the chunk size (cbrt volume). */
+  dent: DentParams;
   hull: HullMode;
   render: { outer: number; inner: number }; // sRGB hex colours (placeholder for render materials)
   reinforcement: { fraction: number; material: string } | null;
 }
 
+export interface DentParams {
+  oMax: number; // max offset per chunk (fraction of chunk size)
+  jRef: number; // N s, impulse scale of the saturation s = oMax (1 - exp(-J / jRef))
+  radius: number; // bond hops of the falloff phi(g / radius)
+  tilt: number; // k_t, tilt gain (rad per unit of offset/radius lever)
+  wMax: number; // offset difference across a bond (fraction of chunk size) that breaks it: d_b = w_b / wMax
+  minForce: number; // N, contact forces below this never dent (resting piles would creep otherwise)
+}
+
 const base = {
+  dent: { oMax: 0.08, jRef: 2000, radius: 2, tilt: 0.5, wMax: 0.035, minForce: 2e4 } as DentParams,
   sigmaY: 0, H: 0, epsPlasticMax: 0, grain: null, hull: 'rigid', reinforcement: null, filterTime: 0.05, propagation: 0,
 } as const;
 
@@ -44,7 +56,7 @@ export const MATERIAL_PRESETS: Material[] = [
   { ...base, name: 'steel', density: 7850, E: 200, nu: 0.3, sigmaT: 400, sigmaC: 400, tauC: 250, mu: 0.3, sigmaY: 250, H: 2, epsPlasticMax: 0.2, epsElasticMax: 0, damageRate: 2, deform: 'joints', render: { outer: 0x7c858c, inner: 0xb8c0c6 } },
   { ...base, name: 'aluminium', density: 2700, E: 69, nu: 0.33, sigmaT: 300, sigmaC: 300, tauC: 200, mu: 0.3, sigmaY: 150, H: 1, epsPlasticMax: 0.12, epsElasticMax: 0, damageRate: 2, deform: 'joints', hull: 'refit', render: { outer: 0xc3c7cb, inner: 0xe0e3e6 } },
   { ...base, name: 'rubber', density: 1100, E: 0.01, nu: 0.49, sigmaT: 15, sigmaC: 15, tauC: 10, mu: 0.9, epsElasticMax: 5, damageRate: 1, deform: 'joints', render: { outer: 0x222222, inner: 0x333333 } },
-  { ...base, name: 'clay', density: 1800, E: 0.05, nu: 0.4, sigmaT: 0.05, sigmaC: 0.2, tauC: 0.05, mu: 0.3, sigmaY: 0.02, H: 0, epsPlasticMax: 0.5, epsElasticMax: 0, damageRate: 1, deform: 'offsets', render: { outer: 0xb5764f, inner: 0x9c623f } },
+  { ...base, name: 'clay', density: 1800, E: 0.05, nu: 0.4, sigmaT: 0.05, sigmaC: 0.2, tauC: 0.05, mu: 0.3, sigmaY: 0.02, H: 0, epsPlasticMax: 0.5, epsElasticMax: 0, damageRate: 1, deform: 'offsets', dent: { oMax: 0.25, jRef: 50, radius: 2, tilt: 0.5, wMax: 0.3, minForce: 500 }, render: { outer: 0xb5764f, inner: 0x9c623f } },
 ];
 
 /** Global debug multipliers applied to every record (tuning knobs; 1 = preset values). */
@@ -92,6 +104,8 @@ export function validateMaterial(m: Material, names: ReadonlySet<string>): strin
   if (m.sigmaY > 0 && !(m.epsPlasticMax > 0)) errs.push(`${m.name}: plastic material needs epsPlasticMax > 0`);
   if (m.sigmaY === 0 && !(m.epsElasticMax > 0)) errs.push(`${m.name}: non-plastic material needs epsElasticMax > 0`);
   if (m.hull === 'refit' && m.deform !== 'joints') errs.push(`${m.name}: hull 'refit' requires deform 'joints'`);
+  const d = m.dent;
+  if (!d || !(d.oMax > 0 && d.jRef > 0 && d.radius >= 1 && d.tilt >= 0 && d.wMax > 0 && d.minForce >= 0)) errs.push(`${m.name}: dent needs oMax, jRef, wMax > 0, radius >= 1, tilt, minForce >= 0`);
   if (m.grain && !(m.grain.strengthRatio > 0 && m.grain.strengthRatio <= 1)) errs.push(`${m.name}: grain.strengthRatio must be in (0, 1]`);
   if (m.reinforcement) {
     if (!names.has(m.reinforcement.material)) errs.push(`${m.name}: unknown reinforcement material '${m.reinforcement.material}'`);
