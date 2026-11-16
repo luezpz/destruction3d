@@ -40,6 +40,14 @@ export interface ImpactEvent {
    */
   force: number;
   dir: [number, number, number];
+  /** Total contact force on B (N, world, = -force on A); impulse this step = forceVec * dt. */
+  forceVec: [number, number, number];
+  /** Bodies owning collider 1 / 2. */
+  bodyA: BodyHandle;
+  bodyB: BodyHandle;
+  /** Linear (CoM) velocity of each body before this step (m/s, world); zero for fixed/sleeping bodies. */
+  vPreA: [number, number, number];
+  vPreB: [number, number, number];
 }
 
 export type JointKind = 'fixed' | 'ball';
@@ -87,6 +95,10 @@ export interface PhysicsBackend {
   readBodyStates(bodies: ArrayLike<BodyHandle>, out: Float64Array): void;
   /** Applies one-step impulses from world wrenches (force(3), torque(3) per body) times dt; wakes the bodies. */
   applyWrenches(bodies: ArrayLike<BodyHandle>, wrench: Float64Array, dt: number): void;
+  /** Body mass (kg); Infinity for fixed/kinematic bodies (they take no impulse). */
+  bodyMass(b: BodyHandle): number;
+  /** Applies a world impulse (N s) at the centre of mass and wakes the body (no-op for non-dynamic bodies). */
+  applyImpulse(b: BodyHandle, impulse: [number, number, number]): void;
   /** Calls fn for every contact-force event since the last drain. */
   drainImpactEvents(fn: (e: ImpactEvent) => void): void;
 }

@@ -51,6 +51,8 @@ Status tracker across sessions. Update at the end of every session. Spec: `PLAN.
 ## M7 Game scene + perf — PLAN §7, M7
 
 ## Decisions / deviations log
+- 2026-11-15: Projectile breaks use a KE >= fracture-energy test (dt-independent), not contact force.
+- 2026-11-16: Collision breaks apply to every contact pair (relative energy 1/2 mu v_n^2), correcting velocities by handing back the absorbed impulse after the step, not by contact hooks (keeps Havok swap simple).
 <!-- YYYY-MM-DD: decision — reason -->
 - 2026-11-15: Fake dents: `Material.dent` record (oMax/jRef/radius/tilt/wMax/minForce); saturation on accumulated impulse per hit chunk (contact split into substep events); crack measure |o_a - o_b| (opening + slip); contact point = chunk centre; tilt scaled by s/(R h)^2 (PLAN gives no impulse scaling).
 - 2026-11-15: Demotion: islands get per-chunk local poses + chunks a static pose (`setPos/setQ`), `IslandHandoff.attach`; no `demote` message (graph never saw promotion). Rest-state bake restricted to parts with loops (tree parts ratcheted under gravity). Re-promotion restores stored targets instead of baking.
@@ -72,6 +74,9 @@ Status tracker across sessions. Update at the end of every session. Spec: `PLAN.
 - 2026-11-14: Created AGENTS.md + PROGRESS.md; no code yet.
 
 ## Session log
+- 2026-11-16: Fixed collision-break explosions / ball sliding (NOTES gotcha): immediate `splitChunk`, pre-step velocities from the backend, per-pair energy budget, CoM hand-back measured at apply time; `ImpactEvent.point` and `applyImpulseAtPoint` replaced by `applyImpulse`. New tests/collisionStress.test.ts (12 scenes, delayed integrity). 74 tests pass, typecheck + build OK; not browser-checked.
+- 2026-11-16: Option A generalized to every contact pair: `sim/CollisionBreaker.ts` replaces ImpactBreaker (debris/ground/island/ball pairs break chunks, pair keeps momentum minus fracture energy); backend `bodyMass`, `applyImpulseAtPoint`, `ImpactEvent.forceVec/point`; GUI dents toggle, break min speed, `collisionBreaks` stat. 62 tests pass, typecheck + build OK; not browser-checked.
+- 2026-11-15: Impact breaking option A (`sim/ImpactBreaker.ts`): balls cut the static chunks they hit and keep momentum minus fracture energy; `PhysicsBackend.setLinvel`, `ImpactEvent.bodyA/B`; GUI 'ball break energy x'. 61 tests pass, typecheck + build OK; not browser-checked. Option B (pre-step shapecast, no bounce frame) if the 1-step hitch shows.
 <!-- YYYY-MM-DD: what was done, what's next -->
 - 2026-11-15: GPU skin harness (`npm run test:gpu`, playwright-core devDep, `skincheck.html`): WebGPU and WebGL2 match the CPU kernel to ~1e-6 (counts 1/8/32, positions + normals). WebGL2 fallback now verified. 58 tests, typecheck + build OK.
 - 2026-11-15: M4 chain sag vs hinge/EB test recorded (sim 1.36x softer than ideal hinge chain); 58 tests pass, typecheck OK.

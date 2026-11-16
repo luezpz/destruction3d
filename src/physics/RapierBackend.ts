@@ -23,6 +23,9 @@ export class RapierBackend implements PhysicsBackend {
   private readonly events = new RAPIER.EventQueue(true);
   private readonly chunkOfCollider = new Map<number, number>();
   private readonly impactThreshold: number;
+  /** Pre-step linear velocity per body (3,), valid when `step` equals `stepNo`. */
+  private readonly pre = new Map<number, { step: number; v: Float64Array }>();
+  private stepNo = 0;
 
   /** @param opts gravity (m/s^2) and impact threshold (N). */
   constructor(opts: RapierBackendOptions = {}) {
@@ -35,7 +38,22 @@ export class RapierBackend implements PhysicsBackend {
 
   step(dt: number): void {
     this.world.timestep = dt;
+    // pre-step velocities of awake bodies for contact events (Rapier only reports the post-step state)
+    this.stepNo++;
+    this.world.bodies.forEachActiveRigidBody(this.world.islands, (b) => {
+      let s = this.pre.get(b.handle);
+      if (!s) this.pre.set(b.handle, (s = { step: 0, v: new Float64Array(3) }));
+      const v = b.linvel();
+      s.v[0] = v.x; s.v[1] = v.y; s.v[2] = v.z;
+      s.step = this.stepNo;
+    });
     this.world.step(this.events);
+  }
+
+  /** @returns body b's linear velocity before this step (3,); zero if it was not awake. */
+  private preVelocity(b: BodyHandle): [number, number, number] {
+    const s = this.pre.get(b);
+    return s && s.step === this.stepNo ? [s.v[0], s.v[1], s.v[2]] : [0, 0, 0];
   }
 
   createStaticBody(): BodyHandle {
@@ -93,6 +111,7 @@ export class RapierBackend implements PhysicsBackend {
     const body = this.world.getRigidBody(b);
     if (!body) return;
     for (let i = 0; i < body.numColliders(); i++) this.chunkOfCollider.delete(body.collider(i).handle);
+    this.pre.delete(b);
     this.world.removeRigidBody(body);
   }
 
@@ -206,14 +225,31 @@ export class RapierBackend implements PhysicsBackend {
     }
   }
 
+  bodyMass(b: BodyHandle): number {
+    const body = this.world.getRigidBody(b);
+    return body && body.isDynamic() ? body.mass() : Infinity;
+  }
+
+  applyImpulse(b: BodyHandle, impulse: [number, number, number]): void {
+    const body = this.world.getRigidBody(b);
+    if (!body || !body.isDynamic()) return;
+    body.applyImpulse({ x: impulse[0], y: impulse[1], z: impulse[2] }, true);
+  }
+
   drainImpactEvents(fn: (e: ImpactEvent) => void): void {
     this.events.drainContactForceEvents((e) => {
-      const d = e.maxForceDirection();
+      const d = e.maxForceDirection(), f = e.totalForce();
+      const c1 = this.world.getCollider(e.collider1()), c2 = this.world.getCollider(e.collider2());
+      const bodyA = c1?.parent()?.handle ?? -1, bodyB = c2?.parent()?.handle ?? -1;
       fn({
         chunkA: this.chunkOfCollider.get(e.collider1()) ?? -1,
         chunkB: this.chunkOfCollider.get(e.collider2()) ?? -1,
         force: e.totalForceMagnitude(),
         dir: [d.x, d.y, d.z],
+        forceVec: [f.x, f.y, f.z],
+        bodyA, bodyB,
+        vPreA: this.preVelocity(bodyA),
+        vPreB: this.preVelocity(bodyB),
       });
     });
   }

@@ -133,6 +133,23 @@ export class IslandHandoff {
   }
 
   /**
+   * Frees chunk c now, ahead of integrity (collision fracture: all its bonds are being cut, so it is its own component):
+   * a static chunk becomes a resting single-chunk island; an island chunk splits off (rest = one piece reusing the
+   * island index; integrity's later reply refines the rest). @returns body of the rest after the split (the old body's
+   * replacement), or -1 if c was static or already alone.
+   */
+  splitChunk(c: number): BodyHandle {
+    const id = this.islandOf[c];
+    if (id < 0) { this.detachOne(Uint32Array.of(c), []); return -1; }
+    const isl = this.islands[id];
+    if (isl.chunks.length < 2) return -1;
+    const rest = isl.chunks.filter((x) => x !== c), all = new Uint32Array(isl.chunks.length);
+    all.set(rest); all[rest.length] = c;
+    this.refracture(all, Uint32Array.of(0, rest.length, all.length), 2); // rest first: it reuses the island index
+    return this.islands[id].body;
+  }
+
+  /**
    * Re-fractures islands split by breaks inside floating parts (PLAN §3): components chunks[offset[k]..offset[k+1]) from
    * integrity; an island whose chunks fall into 2+ components is replaced by one body per piece, each at the old body's
    * current pose and rigid-body velocity at its COM (so the render pose doesn't pop). @returns indices of new/reused islands.

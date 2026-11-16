@@ -67,7 +67,7 @@ async function main(): Promise<void> {
   scene.add(ground);
 
   const params = {
-    scene: SCENES[0] as SceneName, outer: true, inner: true, bondLines: false, breakCount: 10, ballSpeed: 20, ballRadius: 0.25,
+    scene: SCENES[0] as SceneName, outer: true, inner: true, bondLines: false, breakCount: 10, ballSpeed: 20, ballRadius: 0.25, impactEnergy: 1, breakMinSpeed: 0.5, dents: true,
     // Sim (live unless noted "reload")
     sync: false, paused: false, timeScale: 1, physicsHz: 60, substeps: 4, // joint chains need 4 substeps + 16 iterations (NOTES "M4 joint spike")
     g: 9.81, impactThreshold: 500, solverIterations: 16, pgsIterations: 1, // reload
@@ -75,7 +75,7 @@ async function main(): Promise<void> {
   const matScale: MaterialScale = { ...UNIT_SCALE };
   const perStrength: Record<string, number> = Object.fromEntries(MATERIAL_PRESETS.map((m) => [m.name, 1]));
   const stats = {
-    chunks: 0, surface: 0, bonds: 0, outerTris: 0, innerTris: 0, brokenBonds: 0, islands: 0, joints: 0, brokenJoints: 0,
+    chunks: 0, surface: 0, bonds: 0, outerTris: 0, innerTris: 0, brokenBonds: 0, islands: 0, joints: 0, brokenJoints: 0, collisionBreaks: 0,
     mode: '', version: 0, simTickMs: '', replies: 0, latencySteps: 0,
   };
   let cur: Loaded | null = null;
@@ -109,7 +109,8 @@ async function main(): Promise<void> {
     });
     physics.createGround(0, ALL);
     const client = params.sync ? new InlineIntegrity(model, table) : new WorkerIntegrity(model, table);
-    const sim = new DestructionSim(model, table, physics, { client });
+    const sim = new DestructionSim(model, table, physics, { client, collisionBreak: { energyScale: params.impactEnergy, minSpeed: params.breakMinSpeed } });
+    sim.dents = params.dents;
     scene.add(meshes.outer, meshes.inner, bonds.lines);
     cur = { model, meshes, bonds, broken: new Uint8Array(model.bondCount), physics, sim, shownBroken: 0, balls: [], skin: { adj, alive, sw, tex } };
     stats.mode = params.sync ? 'sync (inline)' : 'async (worker)';
@@ -174,7 +175,7 @@ async function main(): Promise<void> {
     stats.innerTris = meshes.cull.innerCount / 3;
     stats.brokenBonds = sim.brokenTotal;
     stats.islands = sim.handoff.islands.length;
-    stats.joints = sim.chains.aliveJoints; stats.brokenJoints = sim.chains.brokenJoints;
+    stats.joints = sim.chains.aliveJoints; stats.brokenJoints = sim.chains.brokenJoints; stats.collisionBreaks = sim.breaker.broken;
     Object.assign(stats, { version: sim.version, replies: sim.replies, latencySteps: sim.replyLatencySteps });
   }
 
@@ -263,6 +264,9 @@ async function main(): Promise<void> {
   af.add({ breakRandom }, 'breakRandom').name('break random bonds');
   af.add(params, 'ballSpeed', 1, 60);
   af.add(params, 'ballRadius', 0.05, 1);
+  af.add(params, 'impactEnergy', 0, 1000).name('collision break energy x').onFinishChange(load);
+  af.add(params, 'breakMinSpeed', 0, 10, 0.1).name('break min speed m/s').onChange((v: number) => { if (cur) cur.sim.breaker.minSpeed = v; });
+  af.add(params, 'dents').name('dents (fake offsets)').onChange((v: boolean) => { if (cur) cur.sim.dents = v; });
   af.add({ throwBall }, 'throwBall').name('throw ball (click / space)');
   af.add({ hint: 'shift+click: remove chunk' }, 'hint').name('tip').disable();
   af.add({ reset: load }, 'reset');

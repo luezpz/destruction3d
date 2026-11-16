@@ -1,6 +1,6 @@
 // Main-thread core loop (PLAN §3, §7) for one structure: bond removals -> integrity (inline or worker) -> breaks ->
 // island handoff. The frame never waits: at most one integrity request is in flight; removals queue until it returns.
-// No structure solver: bonds break only by scripted removal until the external solver is plugged in.
+// No structure solver: bonds break by scripted removal or collision fracture (CollisionBreaker) until the external solver is plugged in.
 
 import { ChunkModel } from '../model/ChunkModel';
 import { MaterialTable } from '../model/Material';
@@ -10,12 +10,15 @@ import { quatFromRotVec } from '../model/quat';
 import { PhysicsBackend } from '../physics/PhysicsBackend';
 import { IslandHandoff } from './IslandHandoff';
 import { JointChainOptions, JointChains } from './JointChains';
+import { BreakDecision, CollisionBreaker, CollisionBreakOptions } from './CollisionBreaker';
 
 export interface SimOptions {
   /** Integrity backend; default inline (synchronous). Pass a WorkerIntegrity in the app. */
   client?: IntegrityClient;
   /** Joint-chain options (PLAN §4b). */
   chains?: JointChainOptions;
+  /** Collision fracture for every contact pair (CollisionBreaker). */
+  collisionBreak?: CollisionBreakOptions;
 }
 
 export class DestructionSim {
@@ -35,8 +38,14 @@ export class DestructionSim {
   /** Per bond (m,): 1 while intact (from integrity replies). */
   readonly alive: Uint8Array;
   readonly chains: JointChains;
+  /** Any contact pair with enough approach energy cuts the chunks it touches and keeps its momentum. */
+  readonly breaker: CollisionBreaker;
+  /** Fake impact dents (PLAN §4 offsets) on/off; existing dents stay. */
+  dents = true;
   private inFlight = false;
   private pendingRemove: number[] = [];
+  /** Collision breaks decided during this step's event drain, applied after it (bodies must not change mid-drain). */
+  private readonly breaks: { d: BreakDecision; bodyA: number; bodyB: number }[] = [];
   /** Impacts on static `offsets` chunks waiting for the next request (IntegrityCore IMPACT_STRIDE each). */
   private pendingImpacts: number[] = [];
   /** Min dent force (N) per chunk, Infinity = never dents (not `offsets`): (n,). Filters events before they reach the worker. */
@@ -51,6 +60,7 @@ export class DestructionSim {
     this.isStatic = new Uint8Array(model.chunkCount).fill(1);
     this.alive = new Uint8Array(model.bondCount).fill(1);
     this.chains = new JointChains(model, table, physics, this, o.chains);
+    this.breaker = new CollisionBreaker(model, table, physics, o.collisionBreak);
     this.dentForce = new Float64Array(model.chunkCount);
     for (let i = 0; i < model.chunkCount; i++) {
       const m = table.materials[model.chunkMaterial[i]];
@@ -65,12 +75,18 @@ export class DestructionSim {
   tick(dt: number): number {
     this.handoff.update(dt);
     // impacts (Rapier auto-drains per step, so read them every substep): promote hit `joints` parts
+    this.breaker.beginStep();
     this.physics.drainImpactEvents((e) => {
+      // collision fracture first: a cut chunk neither dents nor promotes. Bodies change only after the drain.
+      const d = this.breaker.onContact(e, dt, this.alive, this.pendingRemove);
+      if (d) { this.breaks.push({ d, bodyA: e.bodyA, bodyB: e.bodyB }); return; }
       this.chains.onImpact(e.chunkA, e.force); this.chains.onImpact(e.chunkB, e.force);
       // dents: force on B is +dir, on A -dir; impulse = force dt
+      if (!this.dents) return;
       if (e.chunkA >= 0) this.queueDent(e.chunkA, -1, e.dir, e.force, dt);
       if (e.chunkB >= 0) this.queueDent(e.chunkB, 1, e.dir, e.force, dt);
     });
+    this.applyBreaks();
     this.chains.step(dt);
     this.stepsInFlight++;
     const reply = this.client.poll();
@@ -82,6 +98,25 @@ export class DestructionSim {
       if (now) broke += this.apply(now);
     }
     return broke;
+  }
+
+  /**
+   * Frees this step's collision-cut chunks now (ahead of integrity, which confirms the same components later), then
+   * hands the absorbed impulse back to the pair (at the CoM); a split body's share goes to its rest piece.
+   */
+  private applyBreaks(): void {
+    const hd = this.handoff;
+    for (const k of this.breaks) {
+      for (const c of k.d.chunks) {
+        const id = hd.islandOf[c], old = id >= 0 ? hd.islands[id].body : -1;
+        const rest = hd.splitChunk(c);
+        this.isStatic[c] = 0;
+        if (rest < 0) continue;
+        for (const o of this.breaks) { if (o.bodyA === old) o.bodyA = rest; if (o.bodyB === old) o.bodyB = rest; }
+      }
+      this.breaker.handBack(k.d, k.bodyA, k.bodyB);
+    }
+    this.breaks.length = 0;
   }
 
   /** Queues scripted removals (wall removal, explosions); applied by the next integrity request. */
