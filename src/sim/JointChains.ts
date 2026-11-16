@@ -284,9 +284,14 @@ export class JointChains {
     this.changed = new Uint8Array(m); this.broken = new Uint8Array(m); this.ratio = new Float64Array(m);
   }
 
-  /** Queues impact promotion from a contact force event (call per event). @param chunk chunk hit (-1 = none). */
-  onImpact(chunk: number, force: number): void {
-    if (chunk >= 0 && force >= this.promoteForce && this.canPromote(chunk)) this.pendingPromote.push(chunk);
+  /**
+   * Queues impact promotion from a contact force event (call per event). @param chunk chunk hit (-1 = none);
+   * @param force contact force (N). @returns true if the hit promotes (or already queued) a static part.
+   */
+  onImpact(chunk: number, force: number): boolean {
+    if (chunk < 0 || force < this.promoteForce || !this.canPromote(chunk)) return false;
+    if (!this.pendingPromote.includes(chunk)) this.pendingPromote.push(chunk);
+    return true;
   }
 
   /** Per physics step, after `physics.step`: promotions, joint errors, plasticity (motor targets), fracture -> bond removals. */

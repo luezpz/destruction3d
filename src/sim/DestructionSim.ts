@@ -80,7 +80,10 @@ export class DestructionSim {
       // collision fracture first: a cut chunk neither dents nor promotes. Bodies change only after the drain.
       const d = this.breaker.onContact(e, dt, this.alive, this.pendingRemove);
       if (d) { this.breaks.push({ d, bodyA: e.bodyA, bodyB: e.bodyB }); return; }
-      this.chains.onImpact(e.chunkA, e.force); this.chains.onImpact(e.chunkB, e.force);
+      // joint-chain promotion: the part turns dynamic this step, so undo Rapier's bounce off the (still static) part
+      const pa = this.chains.onImpact(e.chunkA, e.force), pb = this.chains.onImpact(e.chunkB, e.force);
+      const pass = pa || pb ? this.breaker.passThrough(e, dt) : null;
+      if (pass) { this.breaks.push({ d: pass, bodyA: e.bodyA, bodyB: e.bodyB }); return; }
       // dents: force on B is +dir, on A -dir; impulse = force dt
       if (!this.dents) return;
       if (e.chunkA >= 0) this.queueDent(e.chunkA, -1, e.dir, e.force, dt);

@@ -111,6 +111,19 @@ export class CollisionBreaker {
   }
 
   /**
+   * Pass decision for a contact whose static side turns dynamic this step (joint-chain promotion): nothing breaks and
+   * no energy is spent, so `handBack` undoes the bounce (v_n' = v_n^-) and Rapier resolves the hit against the moving
+   * part next step, with its joints. @param e event; @param dt step (s). @returns decision, or null if not closing.
+   */
+  passThrough(e: ImpactEvent, dt: number): BreakDecision | null {
+    const F = e.forceVec, f = Math.hypot(F[0], F[1], F[2]);
+    if (!(f > 0)) return null;
+    const n: [number, number, number] = [F[0] / f, F[1] / f, F[2] / f];
+    const vPre = (e.vPreA[0] - e.vPreB[0]) * n[0] + (e.vPreA[1] - e.vPreB[1]) * n[1] + (e.vPreA[2] - e.vPreB[2]) * n[2];
+    return vPre > 0 ? { chunks: [], n, vTarget: vPre, maxJ: f * dt } : null;
+  }
+
+  /**
    * Hands back absorbed impulse for decision d to bodies A, B (after any split; current masses/velocities):
    * dJ = clamp(mu (v_n' - v_n^+), 0, |P|), +dJ n on A, -dJ n on B. Measured now, so earlier hand-backs of the same
    * step are seen and never stack. @param bodyA/bodyB body handles (fixed bodies are skipped).

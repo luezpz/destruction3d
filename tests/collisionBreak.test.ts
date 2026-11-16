@@ -7,6 +7,7 @@ import { gridBoxes } from '../src/model/generators';
 import { RapierBackend, initRapier } from '../src/physics/RapierBackend';
 import { packGroups } from '../src/physics/PhysicsBackend';
 import { DestructionSim } from '../src/sim/DestructionSim';
+import { buildScene } from '../src/scenes';
 
 beforeAll(async () => { await initRapier(); });
 
@@ -75,5 +76,35 @@ describe('collision breaking', () => {
     expect(weak.sim.brokenTotal).toBeGreaterThan(tough.sim.brokenTotal);
     expect(weak.minY).toBeGreaterThan(0); // centres above the ground: no pass-through leak
     expect(tough.minY).toBeGreaterThan(0);
+  });
+});
+
+describe('joint-chain promotion by collision', () => {
+  /** Steel plate scene (skinned, 'joints'); 0.25 m steel ball along -z at 20 m/s into its centre, 60 Hz x 4. */
+  function hitPlate() {
+    const t = createMaterialTable(), model = buildScene('steel plate', t).model;
+    const physics = new RapierBackend({ impactThreshold: 500, solverIterations: 16 });
+    physics.createGround(0, packGroups(0xffff, 0xffff));
+    const sim = new DestructionSim(model, t, physics);
+    const ball = physics.createSphere(0.25, [0, 1, 1.5], [0, 0, -20], 7850, 0xffffffff);
+    const st = new Float64Array(13);
+    let zMin = Infinity, vzEarly = -Infinity;
+    for (let k = 0; k < 120; k++) {
+      physics.step(1 / 240); sim.tick(1 / 240);
+      physics.readBodyStates([ball], st);
+      zMin = Math.min(zMin, st[2]);
+      if (k < 30) vzEarly = Math.max(vzEarly, st[9]); // contact starts ~k = 15
+    }
+    const plateMoved = sim.chains.bodies.some((b) => { physics.readBodyStates([b], st); return st[2] < -0.05; });
+    physics.dispose();
+    return { zMin, vzEarly, plateMoved, promoted: sim.chains.bodies.length };
+  }
+
+  it('the ball pushes into the promoted plate instead of bouncing off the static one', () => {
+    const r = hitPlate();
+    expect(r.promoted).toBeGreaterThan(0);
+    expect(r.vzEarly).toBeLessThan(0); // not reflected by the static plate at first contact (it was, before the pass hand-back)
+    expect(r.zMin).toBeLessThan(-0.2); // drives the plate back (0.25 m ball centre starts touching at z = 0.265)
+    expect(r.plateMoved).toBe(true); // momentum went into the plate; its springs may push the ball back later
   });
 });
