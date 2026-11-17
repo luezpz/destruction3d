@@ -18,7 +18,7 @@ import { buildBondAdjacency, BondAdjacency } from './kernels/bondAdjacency';
 import { buildSkinWeights, reweightBroken, SkinWeights } from './model/skinWeights';
 import { writeChunkPose, writeIdentityPoses } from './kernels/skin';
 import { createSkinTextures, SkinTextures, uploadDirtyWeights, writeSkinRanges } from './render/skinMaterial';
-import { SCENES, SceneName, buildScene } from './scenes';
+import { SCENES, SCENE_STRENGTH, SceneName, buildScene } from './scenes';
 
 const ALL = packGroups(0xffff, 0xffff);
 
@@ -237,7 +237,14 @@ async function main(): Promise<void> {
   }
 
   const gui = new GUI({ title: 'destruction3d' });
-  gui.add(params, 'scene', SCENES).onChange(load);
+  /** Loads the chosen scene with its default per-material strengths (SCENE_STRENGTH), resetting the other sliders to 1. */
+  function selectScene(): void {
+    const defaults = SCENE_STRENGTH[params.scene] ?? {};
+    for (const k in perStrength) perStrength[k] = defaults[k] ?? 1;
+    mf.controllersRecursive().forEach((c) => c.updateDisplay());
+    load();
+  }
+  gui.add(params, 'scene', SCENES).onChange(selectScene);
   const vf = gui.addFolder('debug view');
   vf.add(params, 'outer').name('outer faces').onChange(applyVisibility);
   vf.add(params, 'inner').name('inner faces').onChange(applyVisibility);
@@ -269,7 +276,7 @@ async function main(): Promise<void> {
   const af = gui.addFolder('actions');
   af.add(params, 'breakCount', 1, 200, 1);
   af.add({ breakRandom }, 'breakRandom').name('break random bonds');
-  af.add(params, 'ballSpeed', 1, 60);
+  af.add(params, 'ballSpeed', 1, 120);
   af.add(params, 'ballRadius', 0.05, 1);
   af.add(params, 'impactEnergy', 0, 1000).name('collision break energy x').onFinishChange(load);
   af.add(params, 'breakMinSpeed', 0, 10, 0.1).name('break min speed m/s').onChange((v: number) => { if (cur) cur.sim.breaker.minSpeed = v; });
@@ -299,7 +306,7 @@ async function main(): Promise<void> {
   });
 
   // Debug handle for automated browser checks (console: demo.cur.sim.brokenTotal, ...).
-  (window as unknown as { demo: unknown }).demo = { get cur() { return cur; }, params, stats, matScale, load, throwBall, breakRandom, removePickedChunk, ndc };
+  (window as unknown as { demo: unknown }).demo = { get cur() { return cur; }, params, stats, matScale, load, selectScene, throwBall, breakRandom, removePickedChunk, ndc };
 
   /** One fixed step: `substeps` physics + integrity ticks of dt/substeps (Rapier auto-drains events per step). */
   function stepOnce(l: Loaded): void {
