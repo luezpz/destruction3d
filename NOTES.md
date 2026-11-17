@@ -4,7 +4,7 @@ Memory for future sessions: status, architecture, design spec, decisions. Rules:
 
 ## Status
 **Current milestone:** M4 — joint spike done (spherical joints + implicit angular motors chosen). In-house structure solver removed 2026-11-14 (external solver comes later, M3b).
-**Next task:** remaining M4: dent tuning (cascades from debris). Open: bake ratchet of loop parts under sustained load above yield (NOTES). Promotion by stress ratio waits for the external solver (M3b). Consider evaluating Rapier 0.21 FEM soft bodies (NOTES) before investing more in joint chains.
+**Next task:** remaining M4: browser-check the damage-point dents (branch `damage-dents`), tune `oMax/jRef/tilt`. Open: bake ratchet of loop parts under sustained load above yield (NOTES). Promotion by stress ratio waits for the external solver (M3b). Consider evaluating Rapier 0.21 FEM soft bodies (NOTES) before investing more in joint chains.
 **Blockers:** none
 
 ## Commands
@@ -23,7 +23,7 @@ Memory for future sessions: status, architecture, design spec, decisions. Rules:
 - `kernels/jointPlasticity.ts` corner von Mises (N = V = 0) -> plastic target return + eps_p, elastic / brittle break rules.
 - `model/skinWeights.ts` Design §4 weights: entries `id<<16|w16`, per-vertex offset/count/capacity, `chunkVerts` (chunk -> influenced verts, also §5 hull input), `reweightBroken` (in place, fills `dirtyVerts`). Support R_j = rho * bounding radius of chunk j's verts (rho > 1 keeps the owner); only SKINNED chunks blend, others count == 1. Ties sorted by id so seam copies match exactly.
 - `kernels/skin.ts` CPU skin reference; pose buffer 8 doubles/chunk `[a.xyz, 0, q.xyzw]`, `a = x - q c` (= the 2 RGBA32F texels).
-- `integrity/DentField.ts` fake dents (Design §4 offsets): per-chunk offset/tilt, per-bond crack damage from the offset gradient, BFS within `dent.radius` hops; owned by `IntegrityCore` (request `impacts`, IMPACT_STRIDE 9; reply `poseChunks/poses`). Main: `DestructionSim.queueDent` filters by `dent.minForce`, reply poses -> `handoff.setStaticPose` (detach then starts from the dented pose).
+- `integrity/DentField.ts` fake dents (Design §4 offsets): per-chunk damage points D, offset along the hit dir + random-axis tilt, hit chunk only, never breaks bonds; owned by `IntegrityCore` (request `impacts`, IMPACT_STRIDE 9; reply `poseChunks/poses`). Main: `DestructionSim.queueDent` filters by `dent.minForce`, reply poses -> `handoff.setStaticPose` (detach then starts from the dented pose).
 - `render/islandPose.ts` `writeIslandPoses`: body pose * `local` -> skin poses. Demoted chunks: `main.ts` drains `handoff.staticPoseDirty` once. `model/quat.ts` quat rotate/multiply.
 - `render/skinMaterial.ts` pose texture (RGBA32F, 2 texels/chunk, width 2048) + entry texture (R32UI), `skinRange` attribute, TSL `skinPositionNode` (mirror of `kernels/skin.ts`), `uploadDirtyWeights`.
 - `main.ts` app: physics.step -> sim.tick per fixed step; `syncRender` reveals broken faces, reweights skin around new breaks (own `alive` copy from `brokenLog`), writes island poses to the pose texture.
@@ -78,7 +78,7 @@ Memory for future sessions: status, architecture, design spec, decisions. Rules:
 ## Gotchas
 - Collision breaking uses energy, not contact force: Rapier's event force is ~impulse/dt (one-step stop), so a force threshold changes with dt. The bounce is undone right after its step, not prevented. Default E_break is small (concrete 0.4 m cube ~ 336 J); tune `energyScale`. Events need `impactThreshold` (N) low enough to fire.
 - Collision-break bugs found 2026-11-16 (tests/collisionStress.test.ts guards them, async integrity + all scenes): (1) "pass through pending cuts" with the worker let balls sink into still-static chunks (slid along surfaces) and islands into the ground (overlap explosions) -> free cut chunks immediately instead; (2) one body touching k chunks = k events, each handing back the full impulse -> k x speed (50 m/s debris) -> per-pair energy budget + hand-back measured after earlier ones; (3) hand-back at the contact point added spin the CoM mass ignores -> CoM only. Velocities reconstructed from the event impulse (v+ - P/m) include penetration recovery: use pre-step snapshots.
-- Dents: one contact arrives as many substep events; saturation is per hit chunk on accumulated impulse, so splitting doesn't matter. Contact point = chunk centre (events have none). Debris landing on the wall also dents (cascades at high ball speed: 15 m/s ball, 3 hits -> ~260 breaks); tune via `dent` records. Concrete jRef 2000 N s: 8 m/s ball (r 0.3) dents ~1 cm, cracks on the 2nd-3rd hit.
+- Dents (pre 2026-11-17 model, cracks now removed): one contact arrives as many substep events; saturation is per hit chunk on accumulated impulse, so splitting doesn't matter. Contact point = chunk centre (events have none). Debris landing on the wall also dents (cascades at high ball speed: 15 m/s ball, 3 hits -> ~260 breaks); tune via `dent` records. Concrete jRef 2000 N s: 8 m/s ball (r 0.3) dents ~1 cm, cracks on the 2nd-3rd hit.
 - Joint to the static body disables contacts between that chain body and ALL static colliders (one static body holds the structure). Fine for flush neighbours; a promoted part can pass through the static structure it is jointed to.
 - Sleeping Rapier bodies ignore world gravity changes (tests wake them); motor target changes may not wake them either. Heavily damped bodies creep slowly enough that Rapier's own sleep can freeze them short of equilibrium.
 - Steel at real strength never yields from ball impacts (ratio ~0.02 on a 3 cm plate); use the strength multiplier (x0.01) to see plastic bending in the demo.
@@ -246,7 +246,7 @@ with a 1.6-cell support touches 8 cells (27 with a wider one); a Voronoi cell ha
   Chunk transforms in an `RGBA32F` DataTexture (or storage buffer), 2 texels/chunk: `a_i = x_i - q_i c_i` (rest centre `c_i`), `q_i`. One draw call, no bone-count limit; the texture is tiny (1000 chunks = 32 KB), re-upload only when poses change.
 - **CPU reference** of the same formulas for tests and for small low-poly parts.
 - **Fake deformation (`deform: 'offsets'`, e.g. concrete, brick, stone, plaster)** (decision: no real nonlinear solve; no skinning, every such vertex has `count == 1`, so chunks just move rigidly).
-  Each chunk keeps a permanent visual offset `o_i: (3,)` and tilt `th_i: (3,)` on top of its rest pose; render pose is
+  **(2026-11-17: superseded by the damage-point model below; the falloff/crack text in this bullet is historical.)** Each chunk keeps a permanent visual offset `o_i: (3,)` and tilt `th_i: (3,)` on top of its rest pose; render pose is
   `x_i = x_i0 + amplify * u_el,i + o_i`, `q_i = exp(th_i + amplify * th_el,i) q_i0` (both world-frame rotation vectors, small), with `u_el` the structure solver's displacement (sagging slabs; 0 until the external solver provides it) and `o, th` from impacts
   (the total offset is clamped to `o_max` so the render pose never strays far from the collider):
   - Impact at point `p`, unit direction `n`, impulse `J`: for chunks within graph radius `R`, `do_i = s_sat(J) phi(g_i/R) n`, `dth_i = k_t phi(g_i/R) (n x (c_i - p)) / R`,
@@ -256,6 +256,7 @@ with a 1.6-cell support touches 8 cells (27 with a wider one); a Voronoi cell ha
     reaches `d >= 1` really breaks (section 2). Offsets are permanent.
   - Colliders stay at the rest pose (offsets <= `o_max`); a chunk that detaches takes its current visual pose as its body pose. Runs in the worker (`IntegrityCore` + `DentField`), which keeps the per-bond damage `d_b` and returns changed chunk poses (`o`, `th`) with its breaks. Parameters per material in the `dent` record; crack measure is `|o_j - o_i|` (opening + slip); contact point = hit chunk centre.
   - `deform: 'joints'` materials (metals, rubber, soft plastics) get real deformation (section 4b). Real deformation of brittle materials isn't worth it: strains before cracking are millimetres.
+  - **Damage points (current, 2026-11-17)**: only the hit chunk moves. `D_i += J / jRef`, `f = 1 - exp(-D)`, per hit `df = f(D') - f(D)`: `o_i += oMax size_i df n` (n = incoming push dir, |o| <= oMax size), `th_i += tilt df a` with `a` a random unit axis per hit (seeded xorshift, |th| <= tilt rad). No neighbour falloff, no per-bond crack damage: dents never fracture (they did cascade on the wall demos). Record: `dent { oMax, jRef, tilt, minForce }`.
   - `deform: 'none'` (glass): no dent; with `propagation > 0` it shatters instead.
 - Candy-wrapper from linear blending only on strong twist; switch to dual quaternions if it shows.
 - Tests: CSR prefix sums consistent, in-place shrink never overruns a slot, GPU and CPU skin agree for counts 1, 8, 32, partition of unity (sum w = 1), rest pose is identity, seam copies identical while intact and disjoint after a break, bent-sheet normals stay unit.
@@ -443,6 +444,7 @@ the `Material` table with presets (section 2b), project setup (above), debug ren
 - 2026-11-15: Projectile breaks use a KE >= fracture-energy test (dt-independent), not contact force.
 - 2026-11-16: Collision breaks apply to every contact pair (relative energy 1/2 mu v_n^2), correcting velocities by handing back the absorbed impulse after the step, not by contact hooks (keeps Havok swap simple).
 <!-- YYYY-MM-DD: decision — reason -->
+- 2026-11-17: Dents = per-chunk damage points on the hit chunk only (offset along hit dir, random tilt axis), no falloff and no crack breaks: dent cracks caused unwanted fractures on wall demos. `dent.radius/wMax` removed.
 - 2026-11-15: Fake dents: `Material.dent` record (oMax/jRef/radius/tilt/wMax/minForce); saturation on accumulated impulse per hit chunk (contact split into substep events); crack measure |o_a - o_b| (opening + slip); contact point = chunk centre; tilt scaled by s/(R h)^2 (the design gave no impulse scaling).
 - 2026-11-15: Demotion: islands get per-chunk local poses + chunks a static pose (`setPos/setQ`), `IslandHandoff.attach`; no `demote` message (graph never saw promotion). Rest-state bake restricted to parts with loops (tree parts ratcheted under gravity). Re-promotion restores stored targets instead of baking.
 - 2026-11-15: Joint chains: absolute body damping + own sleep (Rapier cost is the iterations; settling is the lever), part bit as sole membership, rest-state bake after each yield episode (loop incompatibility in 2D parts). Costs: steel sag 5.9 vs 8.2 mm, residual elastic stress baked into permanent set. Kept 16 iters x 4 substeps.
@@ -470,6 +472,7 @@ the `Material` table with presets (section 2b), project setup (above), debug ren
 <!-- YYYY-MM-DD: what was done, what's next -->
 - 2026-11-15: GPU skin harness (`npm run test:gpu`, playwright-core devDep, `skincheck.html`): WebGPU and WebGL2 match the CPU kernel to ~1e-6 (counts 1/8/32, positions + normals). WebGL2 fallback now verified. 58 tests, typecheck + build OK.
 - 2026-11-15: M4 chain sag vs hinge/EB test recorded (sim 1.36x softer than ideal hinge chain); 58 tests pass, typecheck OK.
+- 2026-11-17: branch `damage-dents`: DentField rewritten (damage points, hit chunk only, no bond breaks); 75 tests pass, typecheck + build OK; not browser-checked.
 - 2026-11-15: M4 fake dents (DentField, request/reply plumbing, sim static poses), 3 tests; demotion browser-verified; 57 tests pass, typecheck + build OK.
 - 2026-11-15: M4 demotion (JointChains.demoteRestingParts, IslandHandoff.attach/local poses, main.ts static pose upload), bake ratchet fix for tree parts, 2 new tests; 54 pass, typecheck + build OK. Not browser-checked.
 - 2026-11-15: Joint-chain perf + stability: profiled (Rapier dominates), damping + sleep, part collision groups, rest-state bake; backend `setBodyDamping`, `sleepBodies`, `setJointAnchors` (used by the bake). 52 tests pass, typecheck + build OK; browser: ball-hit soft plate curls, settles, all asleep, simTickMs 0.
