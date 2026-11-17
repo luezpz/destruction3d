@@ -5,6 +5,7 @@
 //   D_i += J / jRef,   f(D) = 1 - exp(-D) (saturates: more damage -> more displaced/rotated, bounded),   df = f(D_new) - f(D_old)
 //   o_i  += oMax size_i df n             (along the incoming damage direction; |o_i| clamped to oMax size_i)
 //   th_i += tilt df a,  a = random unit axis per hit   (|th_i| clamped to tilt rad)
+// Each term is gated by the material's dent.offset / dent.rotate flags; damage points accumulate either way.
 // Alloc-free per impact; the axis comes from a seeded PRNG so runs are reproducible.
 
 import type { ChunkModel } from '../model/ChunkModel';
@@ -52,12 +53,17 @@ export class DentField {
     this.points[hit] = d1;
     const df = Math.exp(-d0) - Math.exp(-d1);
     const i3 = 3 * hit, o = this.offset, t = this.tilt, s = dp.oMax * this.size[hit] * df;
-    o[i3] += s * n[no]; o[i3 + 1] += s * n[no + 1]; o[i3 + 2] += s * n[no + 2];
-    clampLen(o, i3, dp.oMax * this.size[hit]);
-    // uniform random axis on the sphere: z in [-1, 1], phi in [0, 2pi)
-    const z = 2 * this.rand() - 1, phi = 2 * Math.PI * this.rand(), r = Math.sqrt(1 - z * z), a = dp.tilt * df;
-    t[i3] += a * r * Math.cos(phi); t[i3 + 1] += a * r * Math.sin(phi); t[i3 + 2] += a * z;
-    clampLen(t, i3, dp.tilt);
+    if (dp.offset) {
+      o[i3] += s * n[no]; o[i3 + 1] += s * n[no + 1]; o[i3 + 2] += s * n[no + 2];
+      clampLen(o, i3, dp.oMax * this.size[hit]);
+    }
+    if (dp.rotate) {
+      // uniform random axis on the sphere: z in [-1, 1], phi in [0, 2pi)
+      const z = 2 * this.rand() - 1, phi = 2 * Math.PI * this.rand(), r = Math.sqrt(1 - z * z), a = dp.tilt * df;
+      t[i3] += a * r * Math.cos(phi); t[i3 + 1] += a * r * Math.sin(phi); t[i3 + 2] += a * z;
+      clampLen(t, i3, dp.tilt);
+    }
+    if (!dp.offset && !dp.rotate) return;
     if (!this.isDirty[hit]) { this.isDirty[hit] = 1; this.dirty[this.dirtyCount++] = hit; }
   }
 

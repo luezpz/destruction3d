@@ -43,6 +43,22 @@ describe('dent field', () => {
     expect(Math.hypot(t[36], t[37], t[38])).toBeLessThanOrEqual(dp.tilt + 1e-12);
   });
 
+  it('dent.offset / dent.rotate switch positional and rotational dents per material', () => {
+    const only = (offset: boolean, rotate: boolean) => {
+      const t2 = createMaterialTable(table.materials.map((m) => ({ ...m, dent: { ...m.dent, offset, rotate } })));
+      const m = generateFromBoxes(gridBoxes({ counts: [5, 5, 1], cell: [h, h, h], material: materialId(t2, 'concrete'), supportBottom: true }), t2);
+      const core = new IntegrityCore(m, t2), im = new Float64Array(IMPACT_STRIDE), p = m.chunkPos;
+      im.set([12, p[36], p[37], p[38], 0, 0, 1, 500, 1e6]);
+      const r = core.tick({ type: 'tick', remove: new Uint32Array(0), impacts: im });
+      const len = (v: Float64Array) => Math.hypot(v[36], v[37], v[38]);
+      return { o: len(core.dents.offset), t: len(core.dents.tilt), d: core.dents.points[12], n: r.poseChunks.length };
+    };
+    const pos = only(true, false), rot = only(false, true), none = only(false, false);
+    expect(pos.o).toBeGreaterThan(0); expect(pos.t).toBe(0);
+    expect(rot.o).toBe(0); expect(rot.t).toBeGreaterThan(0);
+    expect(none.o + none.t).toBe(0); expect(none.n).toBe(0); expect(none.d).toBeGreaterThan(0);
+  });
+
   it('a hard hit never breaks bonds', () => {
     const core = new IntegrityCore(wall(), table);
     const r = impact(core, 12, 1e7);
