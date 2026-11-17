@@ -171,8 +171,8 @@ async function main(): Promise<void> {
     const h = sim.handoff;
     for (const c of h.staticPoseDirty) {
       writeChunkPose(skin.tex.pose, c, h.setPos, 3 * c, h.setQ, 4 * c, l.model.chunkPos, 3 * c);
-      // a dented `offsets` chunk moves off its neighbours with bonds intact: show its cut faces so the gaps aren't see-through
-      if (l.table.materials[l.model.chunkMaterial[c]].deform === 'offsets') {
+      // a chunk moved off its neighbours with bonds intact (dent): show its cut faces so the gaps aren't see-through, per material
+      if (l.table.materials[l.model.chunkMaterial[c]].dent.revealInner) {
         for (let k = skin.adj.adjOffset[c]; k < skin.adj.adjOffset[c + 1]; k++) revealBondFaces(meshes, skin.adj.adjBond[k]);
       }
     }
