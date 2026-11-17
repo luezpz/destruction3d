@@ -41,6 +41,10 @@ export class RapierBackend implements PhysicsBackend {
     // pre-step velocities of awake bodies for contact events (Rapier only reports the post-step state)
     this.stepNo++;
     this.world.bodies.forEachActiveRigidBody(this.world.islands, (b) => {
+      // a body put to sleep by `sleepBodies` whose island was later woken through a neighbour stays in the active set: it is
+      // still integrated (gravity) but its contacts with fixed bodies are skipped as sleeping, so it sinks through the ground
+      // (NOTES gotcha). Wake such zombies; Rapier's own island sleep is consistent.
+      if (b.isSleeping()) b.wakeUp();
       let s = this.pre.get(b.handle);
       if (!s) this.pre.set(b.handle, (s = { step: 0, v: new Float64Array(3) }));
       const v = b.linvel();
