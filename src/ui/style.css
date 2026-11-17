@@ -1,0 +1,74 @@
+/* Debug app look: dark glass panels, one accent colour, lil-gui themed via its CSS variables. */
+:root {
+  --accent: #ff8a3d;
+  --panel: rgba(20, 23, 29, 0.82);
+  --panel-border: rgba(255, 255, 255, 0.08);
+  --text: #e6e8eb;
+  --muted: #8b929c;
+  --font: 'Inter', 'Segoe UI', system-ui, sans-serif;
+}
+
+.lil-gui.lil-root {
+  --background-color: var(--panel);
+  --widget-color: #2b3039;
+  --hover-color: #353b46;
+  --focus-color: #3d4450;
+  --number-color: var(--accent);
+  --string-color: #9fd38a;
+  --title-background-color: rgba(255, 255, 255, 0.04);
+  --title-text-color: var(--text);
+  --text-color: var(--text);
+  --font-family: var(--font);
+  --font-size: 12px;
+  --input-font-size: 12px;
+  --widget-height: 22px;
+  --widget-border-radius: 4px;
+  --spacing: 6px;
+  --padding: 6px;
+  --name-width: 42%;
+  --width: 290px;
+  top: 12px !important;
+  right: 12px !important;
+  max-height: calc(100vh - 24px);
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  overflow: hidden auto;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
+}
+.lil-gui.lil-root > .lil-title { font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; padding: 4px 8px; }
+.lil-gui .lil-title { font-weight: 500; }
+.lil-gui .lil-controller.lil-function button { background: var(--widget-color); border-radius: 4px; }
+.lil-gui .lil-controller.lil-function:hover button { background: var(--accent); color: #111; }
+.lil-gui .lil-controller.lil-boolean input:checked { background: var(--accent); }
+.lil-gui .lil-controller.lil-number .lil-fill { background: var(--accent); }
+.lil-gui .lil-controller.lil-disabled { opacity: 0.75; }
+
+.hud {
+  position: fixed; top: 12px; left: 12px; z-index: 10;
+  min-width: 220px; padding: 10px 12px;
+  background: var(--panel); border: 1px solid var(--panel-border); border-radius: 10px;
+  backdrop-filter: blur(10px); box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
+  color: var(--text); font: 12px/1.4 var(--font); pointer-events: none; user-select: none;
+}
+.hud-title { font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; font-size: 11px; color: var(--muted); }
+.hud-scene { font-size: 16px; font-weight: 600; margin: 2px 0 8px; }
+.hud-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.hud-stat { background: rgba(255, 255, 255, 0.04); border-radius: 6px; padding: 4px 8px; }
+.hud-stat b { display: block; font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.hud-stat span { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; }
+.hud-stat.accent b { color: var(--accent); }
+.hud-paused { display: none; margin-top: 8px; color: var(--accent); font-weight: 600; letter-spacing: 0.08em; }
+.hud.paused .hud-paused { display: block; }
+
+.hints {
+  position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%); z-index: 10;
+  display: flex; gap: 14px; padding: 7px 14px;
+  background: var(--panel); border: 1px solid var(--panel-border); border-radius: 999px;
+  color: var(--muted); font: 12px var(--font); pointer-events: none; user-select: none; white-space: nowrap;
+}
+.hints kbd {
+  font: 600 11px var(--font); color: var(--text);
+  background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 4px; padding: 1px 5px;
+}
+.lil-gui .lil-controller.lil-number input { color: var(--text); }

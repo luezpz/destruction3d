@@ -5,8 +5,6 @@ import { Box, generateFromBoxes } from '../src/model/boxGenerator';
 import { RapierBackend, initRapier } from '../src/physics/RapierBackend';
 import { DestructionSim } from '../src/sim/DestructionSim';
 import { PlasticViews, updateJointPlasticity } from '../src/kernels/jointPlasticity';
-import { writeIslandPoses } from '../src/render/islandPose';
-import { quatRotate } from '../src/model/quat';
 
 beforeAll(async () => { await initRapier(); });
 
@@ -164,29 +162,24 @@ describe('joint chains (cantilever, 4 substeps, 16 iterations)', () => {
     physics.dispose();
   });
 
-  it('cutting a demoted bent part detaches it as one island at the frozen pose', () => {
+  it('cutting a demoted bent part re-promotes it as a free joint chain at the frozen pose', () => {
     const n = 10, c = cantilever('holdSteel', n, 0.5), { sim, model, physics } = c, h = sim.handoff;
     pushTip(c, n);
     for (let s = 0; s < 60 * 4 * 10 && !sim.chains.demoted; s++) { physics.step(1 / 240); sim.tick(1 / 240); }
     expect(sim.chains.demoted).toBe(n - 1);
-    const frozen = h.setPos.slice(), frozenQ = h.setQ.slice();
+    const frozen = h.setPos.slice();
     let root = -1;
     for (let b = 0; b < model.bondCount; b++) if (model.bondA[b] + model.bondB[b] === 1) root = b;
     sim.removeBonds([root]);
     physics.step(1 / 240); sim.tick(1 / 240);
-    const id = h.islandOf[n - 1];
-    expect(id).toBeGreaterThanOrEqual(0);
-    const isl = h.islands[id], pose = new Float32Array(7);
-    expect(isl.chunks.length).toBe(n - 1);
-    physics.readBodyPoses([isl.body], pose);
-    const skin = new Float64Array(8 * model.chunkCount);
-    writeIslandPoses(skin, isl.chunks, pose, 0, isl.local, model.chunkPos);
-    for (const k of isl.chunks) { // skin pose maps the rest centre onto the frozen centre: q c + a = x
-      const o = 8 * k, cpos = [model.chunkPos[3 * k], model.chunkPos[3 * k + 1], model.chunkPos[3 * k + 2]], out = [0, 0, 0];
-      quatRotate(skin, o + 4, cpos, 0, out);
-      for (let i = 0; i < 3; i++) expect(out[i] + skin[o + i]).toBeCloseTo(frozen[3 * k + i], 2);
-      expect(Math.abs(skin[o + 7] * frozenQ[4 * k + 3] + skin[o + 4] * frozenQ[4 * k] + skin[o + 5] * frozenQ[4 * k + 1] + skin[o + 6] * frozenQ[4 * k + 2])).toBeGreaterThan(0.9999);
+    // joint chunks cut loose while static stay bendable (no stiff rigid island); bodies start at the frozen pose
+    const pose = new Float32Array(7);
+    for (let k = 1; k < n; k++) {
+      expect(sim.chains.chunkBody[k]).toBeGreaterThanOrEqual(0);
+      physics.readBodyPoses([sim.chains.bodies[sim.chains.chunkBody[k]]], pose);
+      for (let i = 0; i < 3; i++) expect(pose[i]).toBeCloseTo(frozen[3 * k + i], 2);
     }
+    expect(sim.chains.aliveJoints).toBe(n - 2);
     physics.dispose();
   });
 });

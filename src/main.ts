@@ -19,6 +19,7 @@ import { buildSkinWeights, reweightBroken, SkinWeights } from './model/skinWeigh
 import { writeChunkPose, writeIdentityPoses } from './kernels/skin';
 import { createSkinTextures, SkinTextures, uploadDirtyWeights, writeSkinRanges } from './render/skinMaterial';
 import { SCENES, SCENE_STRENGTH, SceneName, buildScene } from './scenes';
+import { createHud } from './ui/hud';
 
 const ALL = packGroups(0xffff, 0xffff);
 
@@ -121,6 +122,7 @@ async function main(): Promise<void> {
     });
     refreshColors(cur);
     applyVisibility();
+    hud.setScene(params.scene);
   }
 
   /** Recolours bond lines from the broken flags. */
@@ -236,7 +238,8 @@ async function main(): Promise<void> {
     cur.balls.push({ body, mesh });
   }
 
-  const gui = new GUI({ title: 'destruction3d' });
+  const hud = createHud();
+  const gui = new GUI({ title: 'controls' });
   /** Loads the chosen scene with its default per-material strengths (SCENE_STRENGTH), resetting the other sliders to 1. */
   function selectScene(): void {
     const defaults = SCENE_STRENGTH[params.scene] ?? {};
@@ -244,26 +247,47 @@ async function main(): Promise<void> {
     mf.controllersRecursive().forEach((c) => c.updateDisplay());
     load();
   }
+  /** Toggles pause and keeps the GUI checkbox + HUD badge in sync. */
+  function setPaused(p: boolean): void {
+    params.paused = p;
+    pauseCtl.updateDisplay();
+    hud.setPaused(p);
+  }
+  // top level: what you touch most
   gui.add(params, 'scene', SCENES).onChange(selectScene);
-  const vf = gui.addFolder('debug view');
+  const pauseCtl = gui.add(params, 'paused').onChange(setPaused);
+  gui.add({ reset: load }, 'reset').name('↺ reset scene');
+
+  const bf = gui.addFolder('ball');
+  bf.add(params, 'ballSpeed', 1, 120).name('speed m/s');
+  bf.add(params, 'ballRadius', 0.05, 1).name('radius m');
+  bf.add({ throwBall }, 'throwBall').name('throw ball');
+
+  const kf = gui.addFolder('breaking');
+  kf.add(params, 'impactEnergy', 0, 1000).name('break energy ×').onFinishChange(load);
+  kf.add(params, 'breakMinSpeed', 0, 10, 0.1).name('min speed m/s').onChange((v: number) => { if (cur) cur.sim.breaker.minSpeed = v; });
+  kf.add(params, 'dents').name('dents').onChange((v: boolean) => { if (cur) cur.sim.dents = v; });
+  kf.add(params, 'breakCount', 1, 200, 1).name('random count');
+  kf.add({ breakRandom }, 'breakRandom').name('break random bonds');
+
+  const vf = gui.addFolder('view').close();
   vf.add(params, 'outer').name('outer faces').onChange(applyVisibility);
   vf.add(params, 'inner').name('inner faces').onChange(applyVisibility);
   vf.add(params, 'bondLines').name('bond lines').onChange(applyVisibility);
 
-  const simf = gui.addFolder('sim');
-  simf.add(params, 'sync').name('sync fracture (inline)').onChange(load);
-  simf.add(params, 'paused');
+  const simf = gui.addFolder('simulation').close();
   simf.add({ step: () => { if (cur) stepOnce(cur); } }, 'step').name('step once (paused)');
   simf.add(params, 'timeScale', 0.05, 2, 0.05).name('time scale');
   simf.add(params, 'physicsHz', 30, 240, 10).name('physics Hz');
   simf.add(params, 'substeps', 1, 8, 1);
-  const rf = simf.addFolder('reload on change');
+  simf.add(params, 'sync').name('inline integrity').onChange(load);
+  const rf = simf.addFolder('reloads scene').close();
   rf.add(params, 'g', 0, 30, 0.01).name('gravity').onFinishChange(load);
   rf.add(params, 'impactThreshold', 0, 20000, 50).name('impact threshold N').onFinishChange(load);
-  rf.add(params, 'solverIterations', 1, 32, 1).name('rapier solver iters').onFinishChange(load);
-  rf.add(params, 'pgsIterations', 1, 8, 1).name('rapier PGS iters').onFinishChange(load);
+  rf.add(params, 'solverIterations', 1, 32, 1).name('solver iters').onFinishChange(load);
+  rf.add(params, 'pgsIterations', 1, 8, 1).name('PGS iters').onFinishChange(load);
 
-  const mf = gui.addFolder('material multipliers (reload)');
+  const mf = gui.addFolder('materials (reloads)').close();
   mf.add(matScale, 'strength', 0.1, 100).onFinishChange(load);
   mf.add(matScale, 'stiffness', 0.1, 10).onFinishChange(load);
   mf.add(matScale, 'ductility', 0.1, 10).name('break strain').onFinishChange(load);
@@ -273,18 +297,7 @@ async function main(): Promise<void> {
   for (const name of Object.keys(perStrength)) pm.add(perStrength, name, 0.1, 100).onFinishChange(load);
   mf.add({ reset: () => { Object.assign(matScale, UNIT_SCALE); for (const k in perStrength) perStrength[k] = 1; mf.controllersRecursive().forEach((c) => c.updateDisplay()); load(); } }, 'reset').name('reset multipliers');
 
-  const af = gui.addFolder('actions');
-  af.add(params, 'breakCount', 1, 200, 1);
-  af.add({ breakRandom }, 'breakRandom').name('break random bonds');
-  af.add(params, 'ballSpeed', 1, 120);
-  af.add(params, 'ballRadius', 0.05, 1);
-  af.add(params, 'impactEnergy', 0, 1000).name('collision break energy x').onFinishChange(load);
-  af.add(params, 'breakMinSpeed', 0, 10, 0.1).name('break min speed m/s').onChange((v: number) => { if (cur) cur.sim.breaker.minSpeed = v; });
-  af.add(params, 'dents').name('dents (fake offsets)').onChange((v: boolean) => { if (cur) cur.sim.dents = v; });
-  af.add({ throwBall }, 'throwBall').name('throw ball (click / space)');
-  af.add({ hint: 'shift+click: remove chunk' }, 'hint').name('tip').disable();
-  af.add({ reset: load }, 'reset');
-  const sf = gui.addFolder('stats');
+  const sf = gui.addFolder('stats').close();
   for (const k of Object.keys(stats) as (keyof typeof stats)[]) sf.add(stats, k).disable().listen();
 
   // Pointer: track for aiming; a click (no drag) throws, shift+click removes the chunk under the cursor.
@@ -298,7 +311,12 @@ async function main(): Promise<void> {
     ndc.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
     if (e.shiftKey) removePickedChunk(); else throwBall();
   });
-  window.addEventListener('keydown', (e) => { if (e.code === 'Space') throwBall(); });
+  window.addEventListener('keydown', (e) => {
+    if ((e.target as HTMLElement).closest?.('.lil-gui')) return; // typing in a GUI field
+    if (e.code === 'Space') { e.preventDefault(); throwBall(); }
+    else if (e.code === 'KeyP') setPaused(!params.paused);
+    else if (e.code === 'KeyR') load();
+  });
   window.addEventListener('resize', () => {
     camera.aspect = innerWidth / innerHeight;
     camera.updateProjectionMatrix();
@@ -319,9 +337,10 @@ async function main(): Promise<void> {
 
   const pose = new Float32Array(7);
   load();
-  let acc = 0, last = performance.now();
+  let acc = 0, last = performance.now(), fps = 60;
   renderer.setAnimationLoop(() => {
     const now = performance.now();
+    fps += (1000 / Math.max(now - last, 1) - fps) * 0.05; // smoothed
     acc = params.paused ? 0 : Math.min(acc + params.timeScale * (now - last) / 1000, 0.1); // clamp: never spiral after a stall
     last = now;
     if (cur) {
@@ -330,6 +349,7 @@ async function main(): Promise<void> {
       while (acc >= dt) { stepOnce(cur); acc -= dt; }
       stats.simTickMs = simMs.toFixed(2);
       syncRender(cur);
+      hud.update({ fps: Math.round(fps), simMs: stats.simTickMs, brokenBonds: stats.brokenBonds, islands: stats.islands, joints: stats.joints, collisionBreaks: stats.collisionBreaks });
       for (const b of cur.balls) {
         cur.physics.readBodyPoses([b.body], pose);
         b.mesh.position.set(pose[0], pose[1], pose[2]);

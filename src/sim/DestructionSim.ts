@@ -167,7 +167,12 @@ export class DestructionSim {
     }
     const comps = r.detachedOffset.length - 1;
     if (comps > 0) {
-      for (let k = 0; k < r.detachedOffset[comps]; k++) this.isStatic[r.detachedChunks[k]] = 0;
+      // `joints` chunks cut loose while still static become a (free) joint chain, not a stiff rigid island: mark the rest of the
+      // components non-static first (so no joint anchors to them), then promote; detach skips the promoted chunks
+      const n = r.detachedOffset[comps], ch = this.chains;
+      for (let k = 0; k < n; k++) { const c = r.detachedChunks[k]; if (!ch.canPromote(c)) this.isStatic[c] = 0; }
+      for (let k = 0; k < n; k++) ch.promote(r.detachedChunks[k]);
+      for (let k = 0; k < n; k++) this.isStatic[r.detachedChunks[k]] = 0;
       this.handoff.detach(r.detachedChunks, r.detachedOffset, comps);
     }
     const floats = r.floatOffset.length - 1;

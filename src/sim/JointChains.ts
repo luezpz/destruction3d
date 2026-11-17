@@ -22,6 +22,10 @@ export interface JointChainOptions {
   /** Absolute body damping (1/s) while jointed: joint damping is relative and leaves whole-part modes ringing (never sleeps). */
   linearDamping?: number;
   angularDamping?: number;
+  /** Damping (1/s) once a body is disconnected from the structure (lost its last joint, or its part lost its last anchor):
+   *  realistic values so debris flies and tumbles freely; the heavy settle damping is only for stability while anchored. */
+  freeLinearDamping?: number;
+  freeAngularDamping?: number;
   /** Rest test for sleeping a promoted part: every body below these speeds (m/s, rad/s) for `sleepTime` s. Rapier's own sleep takes seconds. */
   sleepLinear?: number;
   sleepAngular?: number;
@@ -76,8 +80,14 @@ export class JointChains {
   private pendingPromote: number[] = [];
   private readonly linDamp: number;
   private readonly angDamp: number;
+  private readonly freeLin: number;
+  private readonly freeAng: number;
   /** Alive joints per body index (body 0 = static, unused). A body losing its last joint drops the chain damping. */
   private readonly bodyJoints: number[] = [0];
+  /** Per body index: 1 once it got the free (disconnected) damping, so it is set only once. */
+  private readonly bodyFree: number[] = [0];
+  /** Parts that lost a joint this step: their pieces cut off from the anchors switch to free damping. */
+  private readonly dirtyParts = new Set<number>();
   /** Promoted parts: body indices/handles, quiet time (s), alive joints to the static body (linear damping only while > 0). */
   private readonly parts: { bodies: number[]; handles: number[]; quiet: number; anchors: number; yielding: boolean; sinceYield: number }[] = [];
   /** Part index per body index (body 0 = static: -1). */
@@ -105,6 +115,8 @@ export class JointChains {
     this.promoteForce = o.promoteForce ?? 2000;
     this.linDamp = o.linearDamping ?? 2; // settles a hit 3 cm steel plate in ~1.5 s (NOTES "Joint-chain perf")
     this.angDamp = o.angularDamping ?? 2;
+    this.freeLin = o.freeLinearDamping ?? 0;
+    this.freeAng = o.freeAngularDamping ?? 0.05;
     this.sleepLin = o.sleepLinear ?? 0.005;
     this.sleepAng = o.sleepAngular ?? 0.02;
     this.sleepTime = o.sleepTime ?? 0.25;
@@ -163,6 +175,7 @@ export class JointChains {
       this.chunkBody[c] = this.bodies.length;
       this.bodies.push(isl.body);
       this.bodyJoints.push(0);
+      this.bodyFree.push(0);
       this.bodyPart.push(this.parts.length - 1);
       this.bodyChunk.push(c);
       this.physics.setBodyDamping(isl.body, this.linDamp, this.angDamp);
@@ -179,6 +192,8 @@ export class JointChains {
     }
     // a previously demoted part restarts with its stored targets (it rested in equilibrium with
     // them, a bake would drop the load and re-yield it) and anchors re-closed at the frozen pose
+    // a part promoted without any anchor (already cut loose from the structure) is free debris from the start
+    if (rec.anchors === 0) for (const i of rec.bodies) this.setFree(i);
     this.rebuildViews();
     this.physics.readBodyStates(this.bodies, this.state);
     for (let j = firstNew; j < this.joints.length; j++) {
@@ -322,6 +337,8 @@ export class JointChains {
         p.yielding = true; p.sinceYield = 0;
       }
     }
+    for (const pi of this.dirtyParts) this.freeUnanchored(pi);
+    this.dirtyParts.clear();
     this.bakeSettledYields(dt);
     this.demoteRestingParts();
   }
@@ -342,17 +359,7 @@ export class JointChains {
     for (let pi = 0; pi < this.parts.length; pi++) {
       const p = this.parts[pi];
       if (p.anchors === 0 || p.yielding || p.quiet < this.demoteTime || !p.bodies.length) continue;
-      // bodies reachable from the static body (index 0) through alive joints of this part
-      const reach = new Set<number>([0]);
-      for (let grew = true; grew;) {
-        grew = false;
-        for (let j = 0; j < this.joints.length; j++) {
-          const r = this.joints[j];
-          if (!this.pv.alive[j] || this.bodyPart[r.a || r.b] !== pi || reach.has(r.a) === reach.has(r.b)) continue;
-          reach.add(r.a); reach.add(r.b); grew = true;
-        }
-      }
-      reach.delete(0);
+      const reach = this.anchoredBodies(pi);
       for (let j = 0; j < this.joints.length; j++) {
         const r = this.joints[j];
         if (!this.pv.alive[j] || !(reach.has(r.a) || reach.has(r.b))) continue;
@@ -378,6 +385,34 @@ export class JointChains {
       p.quiet = 0;
       this.demoted += reach.size;
     }
+  }
+
+  /** Body indices of part pi reachable from the static body (index 0) through alive joints (0 itself excluded). */
+  private anchoredBodies(pi: number): Set<number> {
+    const reach = new Set<number>([0]);
+    for (let grew = true; grew;) {
+      grew = false;
+      for (let j = 0; j < this.joints.length; j++) {
+        const r = this.joints[j];
+        if (!this.pv.alive[j] || this.bodyPart[r.a || r.b] !== pi || reach.has(r.a) === reach.has(r.b)) continue;
+        reach.add(r.a); reach.add(r.b); grew = true;
+      }
+    }
+    reach.delete(0);
+    return reach;
+  }
+
+  /** Post-fracture damping: every piece of part pi no longer connected to an anchor (jointed or not) gets free damping. */
+  private freeUnanchored(pi: number): void {
+    const reach = this.anchoredBodies(pi);
+    for (const i of this.parts[pi].bodies) if (!reach.has(i)) this.setFree(i);
+  }
+
+  /** Switches body i to the free (realistic) damping, once. */
+  private setFree(i: number): void {
+    if (this.bodyFree[i]) return;
+    this.bodyFree[i] = 1;
+    this.physics.setBodyDamping(this.bodies[i], this.freeLin, this.freeAng);
   }
 
   /**
@@ -441,9 +476,9 @@ export class JointChains {
   private readonly Ro = new Float64Array(9);
   private readonly Rd = new Float64Array(9);
 
-  /** A body that lost its last joint is plain debris: no damping, collides with its old part again. */
+  /** A body that lost its last joint is plain debris: free (realistic) damping, collides with its old part again. */
   private freeBody(i: number): void {
-    this.physics.setBodyDamping(this.bodies[i], 0, 0);
+    this.setFree(i);
     const isl = this.host.handoff.islands.find((x) => x.body === this.bodies[i]);
     if (!isl) return;
     isl.groups = undefined;
@@ -473,10 +508,10 @@ export class JointChains {
     }
     const r = this.joints[j];
     if (r.a === 0 || r.b === 0) {
-      const p = this.parts[this.bodyPart[r.a || r.b]];
-      // last anchor gone: the part falls freely, keep only angular damping (linear damping would slow the fall)
-      if (--p.anchors === 0) for (const i of p.bodies) if (this.bodyJoints[i] > 0) this.physics.setBodyDamping(this.bodies[i], 0, this.angDamp);
+      this.parts[this.bodyPart[r.a || r.b]].anchors--;
     }
+    // pieces cut off from the anchors (whole part, or a fragment of a still-anchored part) get free damping after the break loop
+    this.dirtyParts.add(this.bodyPart[r.a || r.b]);
     if (send) { this.host.removeBonds([this.joints[j].bond]); this.brokenJoints++; }
   }
 
