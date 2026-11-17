@@ -13,6 +13,7 @@ import { chunkMasses, chunkRotInertia } from '../integrity/loads';
 import { quatFromMatrix } from '../integrity/islandMass';
 import { BodyHandle, JointHandle, PART_BIT0, PART_BITS, PhysicsBackend, packGroups } from '../physics/PhysicsBackend';
 import { DEBRIS_GROUPS, IslandHandoff } from './IslandHandoff';
+import { quatMul, quatRotate } from '../model/quat';
 
 export interface JointChainOptions {
   /** Motor stiffness = raw section stiffness (GJ/L, EI/L) x this (spike: 1e-2 keeps motor compliance above the solver floor). */
@@ -50,6 +51,8 @@ interface JointRec {
   handle: JointHandle;
   a: number; b: number; // body indices into `bodies`
   staticChunk: number; // chunk on the static side, -1 if both sides are promoted
+  carrier: number; // chunk on the rigid-island side once re-bound (side a, NOTES Design §4b "carriers"), -1 = none
+  restQ?: number[]; // kernel q0 (4,): carrier chunk's rotation in its island body frame; undefined = identity
   k: [number, number, number];
   c: [number, number, number];
 }
@@ -106,6 +109,8 @@ export class JointChains {
   private readonly bakeDelay: number;
   /** Rest-state bakes since creation (debug counter). */
   bakes = 0;
+  /** Joints moved from the static body onto a detached rigid island since creation (debug counter). */
+  rebound = 0;
   /** Joints removed by fracture since creation (debug counter). */
   brokenJoints = 0;
 
@@ -213,10 +218,7 @@ export class JointChains {
     const oa = origin(ca, ia), ob = origin(cb, ib), cen = model.bondCentroid.subarray(3 * b, 3 * b + 3);
     const anchorA: [number, number, number] = [cen[0] - oa[0], cen[1] - oa[1], cen[2] - oa[2]];
     const anchorB: [number, number, number] = [cen[0] - ob[0], cen[1] - ob[1], cen[2] - ob[2]];
-    const n = model.bondNormal, t1 = model.bondT1, t2 = model.bondT2, b3 = 3 * b;
-    // R = [n t1 t2] as columns, row-major
-    const R = [n[b3], t1[b3], t2[b3], n[b3 + 1], t1[b3 + 1], t2[b3 + 1], n[b3 + 2], t1[b3 + 2], t2[b3 + 2]];
-    const frame = quatFromMatrix(R);
+    const frame = this.bondFrameQuat(b);
     const mat = this.table.materials[model.bondMaterial[b]];
     const E = mat.E * 1e9, G = E / (2 * (1 + mat.nu));
     const L = Math.hypot(model.chunkPos[3 * ca] - model.chunkPos[3 * cb], model.chunkPos[3 * ca + 1] - model.chunkPos[3 * cb + 1], model.chunkPos[3 * ca + 2] - model.chunkPos[3 * cb + 2]);
@@ -228,8 +230,17 @@ export class JointChains {
     this.bodyJoints[ia]++; this.bodyJoints[ib]++;
     if (ia === 0 || ib === 0) this.parts[this.bodyPart[ia || ib]].anchors++;
     this.bondJoint[b] = this.joints.length;
-    this.joints.push({ bond: b, handle, a: ia, b: ib, staticChunk: ia === 0 ? ca : ib === 0 ? cb : -1, k, c });
+    this.joints.push({ bond: b, handle, a: ia, b: ib, staticChunk: ia === 0 ? ca : ib === 0 ? cb : -1, carrier: -1, k, c });
   }
+
+  /** World bond frame of bond b as a quat (x,y,z,w): R = [n t1 t2] as columns. */
+  private bondFrameQuat(b: number): [number, number, number, number] {
+    const n = this.model.bondNormal, t1 = this.model.bondT1, t2 = this.model.bondT2, b3 = 3 * b;
+    return quatFromMatrix([n[b3], t1[b3], t2[b3], n[b3 + 1], t1[b3 + 1], t2[b3 + 1], n[b3 + 2], t1[b3 + 2], t2[b3 + 2]]);
+  }
+
+  /** Part index of joint r (the side that is a chain body; carriers and the static body have part -1). */
+  private partOf(r: JointRec): number { return this.bodyPart[r.a] >= 0 ? this.bodyPart[r.a] : this.bodyPart[r.b]; }
 
   /** Rebuilds the typed views from the joint records, keeping targets/strain/alive of existing joints (setup-time, allocates). */
   private rebuildViews(): void {
@@ -263,7 +274,7 @@ export class JointChains {
         jv.frame[9 * j + 3 * i + 2] = model.bondT2[b3 + i];
         pv.k[3 * j + i] = r.k[i];
       }
-      jv.restQ[4 * j + 3] = 1;
+      if (r.restQ) for (let i = 0; i < 4; i++) jv.restQ[4 * j + i] = r.restQ[i]; else jv.restQ[4 * j + 3] = 1;
       const mat = this.table.materials[model.bondMaterial[b]];
       pv.I1[j] = model.bondI1[b]; pv.I2[j] = model.bondI2[b]; pv.J[j] = model.bondJ[b];
       pv.length[j] = Math.hypot(model.chunkPos[3 * ca] - model.chunkPos[3 * cb], model.chunkPos[3 * ca + 1] - model.chunkPos[3 * cb + 1], model.chunkPos[3 * ca + 2] - model.chunkPos[3 * cb + 2]);
@@ -315,15 +326,20 @@ export class JointChains {
     this.pendingPromote.length = 0;
     const m = this.joints.length;
     if (!m) return;
-    const { pv, host } = this;
-    // a static anchor that left the structure (detached as debris) can no longer hold its joint
-    // and a bond cut elsewhere (scripted / integrity) drops its joint
+    const { host } = this;
+    // a static anchor that left the structure moves the joint onto its rigid island (the part keeps hanging on the falling
+    // piece); a bond cut elsewhere (scripted / integrity) or a carrier island that was split/removed drops the joint
+    const hd = host.handoff;
+    this.dropDeadCarriers();
     for (let j = 0; j < m; j++) {
-      if (!pv.alive[j]) continue;
-      const sc = this.joints[j].staticChunk;
-      if (!host.alive[this.joints[j].bond]) this.breakJoint(j, false);
-      else if (sc >= 0 && !host.isStatic[sc]) this.breakJoint(j);
+      if (!this.pv.alive[j]) continue;
+      const r = this.joints[j], sc = r.staticChunk, cc = r.carrier;
+      if (!host.alive[r.bond]) this.breakJoint(j, false);
+      else if ((sc >= 0 && !host.isStatic[sc]) || (cc >= 0 && hd.islands[hd.islandOf[cc]]?.body !== this.bodies[r.a])) {
+        if (!this.rebind(j)) this.breakJoint(j);
+      }
     }
+    const pv = this.pv; // rebind may rebuild the views
     this.physics.readBodyStates(this.bodies, this.state);
     this.sleepSettledParts(dt);
     this.computePhi();
@@ -333,7 +349,7 @@ export class JointChains {
       if (this.changed[j]) {
         const r = this.joints[j];
         this.physics.setSpringTarget(r.handle, [pv.target[3 * j], pv.target[3 * j + 1], pv.target[3 * j + 2]], r.k, r.c);
-        const p = this.parts[this.bodyPart[r.a || r.b]];
+        const p = this.parts[this.partOf(r)];
         p.yielding = true; p.sinceYield = 0;
       }
     }
@@ -394,7 +410,7 @@ export class JointChains {
       grew = false;
       for (let j = 0; j < this.joints.length; j++) {
         const r = this.joints[j];
-        if (!this.pv.alive[j] || this.bodyPart[r.a || r.b] !== pi || reach.has(r.a) === reach.has(r.b)) continue;
+        if (!this.pv.alive[j] || r.carrier >= 0 || this.partOf(r) !== pi || reach.has(r.a) === reach.has(r.b)) continue;
         reach.add(r.a); reach.add(r.b); grew = true;
       }
     }
@@ -437,7 +453,7 @@ export class JointChains {
   /** True if part pi's alive joints form no loop (static body = one node): E = alive bodies (connected). */
   private isTree(pi: number): boolean {
     let e = 0, v = 0;
-    for (let j = 0; j < this.joints.length; j++) if (this.pv.alive[j] && this.bodyPart[this.joints[j].a || this.joints[j].b] === pi) e++;
+    for (let j = 0; j < this.joints.length; j++) if (this.pv.alive[j] && this.partOf(this.joints[j]) === pi) e++;
     for (const i of this.parts[pi].bodies) if (this.bodyJoints[i] > 0) v++;
     return e <= v;
   }
@@ -446,7 +462,7 @@ export class JointChains {
   private bakePart(pi: number): void {
     for (let j = 0; j < this.joints.length; j++) {
       const r = this.joints[j];
-      if (!this.pv.alive[j] || this.bodyPart[r.a || r.b] !== pi) continue;
+      if (!this.pv.alive[j] || this.partOf(r) !== pi) continue;
       for (let i = 0; i < 3; i++) this.pv.target[3 * j + i] = this.phi[3 * j + i];
       this.physics.setSpringTarget(r.handle, [this.phi[3 * j], this.phi[3 * j + 1], this.phi[3 * j + 2]], r.k, r.c);
       this.resetAnchor(j);
@@ -499,19 +515,70 @@ export class JointChains {
     }
   }
 
+  /**
+   * Re-binds joint j onto the rigid island now holding its static/carrier chunk c (post-collapse: the part stays attached and
+   * active on the falling piece; after a carrier split it follows c's new body). The island is side a. With c's pose in the
+   * body frame (t, r): anchor a_i = t + r (centroid - chunkPos_c), Rapier frame r B, kernel q0 = r (so phi = rotation of the
+   * chain vs the chunk, continuous). Moving off the static side b inverts the relative rotation: targets are negated.
+   * @returns false if c is in no live island (then the joint breaks).
+   */
+  private rebind(j: number): boolean {
+    const r = this.joints[j], hd = this.host.handoff, first = r.carrier < 0, c = first ? r.staticChunk : r.carrier;
+    const id = hd.islandOf[c];
+    if (id < 0 || hd.islands[id].removed || this.chunkBody[c] >= 0) return false;
+    const isl = hd.islands[id], handle = isl.body, slot = isl.chunks.indexOf(c), loc = isl.local, o7 = 7 * slot;
+    let ii = this.bodies.indexOf(handle, 1);
+    if (ii < 0) { // carrier body: no part, never damped, no free/debris switch
+      ii = this.bodies.length;
+      this.bodies.push(handle); this.bodyJoints.push(0); this.bodyFree.push(1); this.bodyPart.push(-1); this.bodyChunk.push(-1);
+      this.rebuildViews();
+    }
+    const jv = this.jv, pv = this.pv, j3 = 3 * j, b3 = 3 * r.bond, P = this.model.chunkPos;
+    const swap = first && r.b === 0, old = swap ? r.b : r.a, d = swap ? r.a : r.b;
+    const ad: [number, number, number] = swap ? [jv.anchorA[j3], jv.anchorA[j3 + 1], jv.anchorA[j3 + 2]] : [jv.anchorB[j3], jv.anchorB[j3 + 1], jv.anchorB[j3 + 2]];
+    const rq = [loc[o7 + 3], loc[o7 + 4], loc[o7 + 5], loc[o7 + 6]], ai: [number, number, number] = [0, 0, 0];
+    quatRotate(rq, 0, [this.model.bondCentroid[b3] - P[3 * c], this.model.bondCentroid[b3 + 1] - P[3 * c + 1], this.model.bondCentroid[b3 + 2] - P[3 * c + 2]], 0, ai);
+    for (let i = 0; i < 3; i++) ai[i] += loc[o7 + i];
+    const fW = this.bondFrameQuat(r.bond), fI: [number, number, number, number] = [0, 0, 0, 0];
+    quatMul(rq, 0, fW, 0, fI);
+    this.physics.removeJoint(r.handle);
+    r.handle = this.physics.createSpringJoint(handle, this.bodies[d], ai, ad, fI, fW, r.k, r.c);
+    if (swap) for (let i = 0; i < 3; i++) pv.target[j3 + i] = -pv.target[j3 + i];
+    this.physics.setSpringTarget(r.handle, [pv.target[j3], pv.target[j3 + 1], pv.target[j3 + 2]], r.k, r.c);
+    r.a = ii; r.b = d; r.staticChunk = -1; r.carrier = c; r.restQ = rq;
+    jv.jointA[j] = ii; jv.jointB[j] = d;
+    for (let i = 0; i < 3; i++) { jv.anchorA[j3 + i] = ai[i]; jv.anchorB[j3 + i] = ad[i]; }
+    for (let i = 0; i < 4; i++) jv.restQ[4 * j + i] = rq[i];
+    this.bodyJoints[old]--; this.bodyJoints[ii]++;
+    if (old === 0) {
+      this.parts[this.bodyPart[d]].anchors--;
+      this.dirtyParts.add(this.bodyPart[d]); // no static anchor left -> free damping: the part swings with its carrier
+    }
+    this.rebound++;
+    return true;
+  }
+
+  /** Points carrier body slots whose island body is gone (split/removed) at the static body, so state reads stay valid. */
+  private dropDeadCarriers(): void {
+    let live: Set<BodyHandle> | null = null;
+    for (let i = 1; i < this.bodies.length; i++) {
+      if (this.bodyPart[i] >= 0 || this.bodies[i] === this.host.handoff.staticBody) continue;
+      live ??= new Set(this.host.handoff.islands.filter((x) => !x.removed).map((x) => x.body));
+      if (!live.has(this.bodies[i])) this.bodies[i] = this.host.handoff.staticBody;
+    }
+  }
+
   /** Removes joint j; `send` = also send its bond to integrity as a removal (false when integrity already broke it). */
   private breakJoint(j: number, send = true): void {
     this.pv.alive[j] = 0; this.jv.alive[j] = 0;
     this.physics.removeJoint(this.joints[j].handle);
     for (const i of [this.joints[j].a, this.joints[j].b]) {
-      if (i > 0 && --this.bodyJoints[i] === 0) this.freeBody(i);
+      if (i > 0 && --this.bodyJoints[i] === 0 && this.bodyPart[i] >= 0) this.freeBody(i);
     }
     const r = this.joints[j];
-    if (r.a === 0 || r.b === 0) {
-      this.parts[this.bodyPart[r.a || r.b]].anchors--;
-    }
+    if (r.a === 0 || r.b === 0) this.parts[this.partOf(r)].anchors--;
     // pieces cut off from the anchors (whole part, or a fragment of a still-anchored part) get free damping after the break loop
-    this.dirtyParts.add(this.bodyPart[r.a || r.b]);
+    this.dirtyParts.add(this.partOf(r));
     if (send) { this.host.removeBonds([this.joints[j].bond]); this.brokenJoints++; }
   }
 

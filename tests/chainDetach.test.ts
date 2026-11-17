@@ -1,5 +1,5 @@
 // Joint parts cut loose before promotion (NOTES Design §4b): a static `joints` part detached with its non-joint support becomes
-// a free joint chain (bendable, realistic damping), not a stiff rigid island.
+// a free joint chain (bendable, realistic damping), not a stiff rigid island, still jointed to its detached support piece.
 import { beforeAll, describe, expect, it } from 'vitest';
 import { createMaterialTable, materialId } from '../src/model/Material';
 import { Box, generateFromBoxes } from '../src/model/boxGenerator';
@@ -27,7 +27,8 @@ describe('joint part detached while static', () => {
     for (let c = 2; c < 7; c++) expect(sim.chains.chunkBody[c]).toBeGreaterThanOrEqual(0);
     expect(sim.chains.chunkBody[1]).toBe(-1); // concrete: rigid island
     expect(sim.handoff.islandOf[1]).toBeGreaterThanOrEqual(0);
-    expect(sim.chains.aliveJoints).toBe(4); // steel-steel only, no anchor to the detached concrete
+    expect(sim.chains.aliveJoints).toBe(5); // 4 steel-steel + the anchor re-bound onto the detached concrete island
+    expect(sim.chains.rebound).toBe(1);
     expect(damp.at(-1)).toEqual([0, 0.05]);
     physics.dispose();
   });
