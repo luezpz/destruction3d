@@ -57,13 +57,13 @@ function uniqueCuts(vals: number[], tol: number): number[] {
 
 /**
  * Generates the ChunkModel. Mesh faces are split along overlap rectangles so each render triangle is either outer
- * or the cut face of exactly one bond (needed by the culled inner index buffer, PLAN §6).
+ * or the cut face of exactly one bond (needed by the culled inner index buffer, NOTES Design §6).
  * @param boxes chunk boxes; @param table material table (derived interface materials may be appended).
  */
 export function generateFromBoxes(boxes: Box[], table: MaterialTable, opts: BoxGenOptions = {}): ChunkModel {
   const tol = opts.tol ?? 1e-6;
   const n = boxes.length;
-  if (n > 0xffff) throw new Error('more than 65535 chunks per mesh: split the mesh (16-bit chunk ids, PLAN §4)');
+  if (n > 0xffff) throw new Error('more than 65535 chunks per mesh: split the mesh (16-bit chunk ids, NOTES Design §4)');
 
   const chunkPos = new Float64Array(3 * n), chunkVolume = new Float64Array(n);
   const chunkMaterial = new Uint16Array(n), chunkFlags = new Uint8Array(n);

@@ -1,4 +1,4 @@
-// Variable-length, topology-aware skin weights in CSR layout (PLAN §4 "Weights", "Topology-aware", "Variable-length weights").
+// Variable-length, topology-aware skin weights in CSR layout (NOTES Design §4 "Weights", "Topology-aware", "Variable-length weights").
 // Headless: no three.js/Rapier. Setup allocates; `reweightBroken` is allocation-free (scratch preallocated).
 
 import { ChunkFlag, ChunkModel } from './ChunkModel';
@@ -31,7 +31,7 @@ export interface SkinWeights {
   restPos: Float64Array;
   /** Support radius R_j: (n,). */
   chunkRadius: Float64Array;
-  /** Chunk -> vertices it initially influences, CSR (also the hull input V_c of PLAN §5): verts of j are chunkVerts[chunkVertOffset[j] .. [j+1]). */
+  /** Chunk -> vertices it initially influences, CSR (also the hull input V_c of NOTES Design §5): verts of j are chunkVerts[chunkVertOffset[j] .. [j+1]). */
   chunkVertOffset: Uint32Array; // (n+1,)
   chunkVerts: Uint32Array;
   /** Vertices rewritten by the last `reweightBroken` call: dirtyVerts[0 .. dirtyCount). Upload only these. */
@@ -186,7 +186,7 @@ function weighVertex(sw: SkinWeights, model: ChunkModel, adj: BondAdjacency, ali
 }
 
 /**
- * Re-weights, in place, every vertex influenced by an end of a broken bond (PLAN §4: breaks only remove influences, so the new
+ * Re-weights, in place, every vertex influenced by an end of a broken bond (NOTES Design §4: breaks only remove influences, so the new
  * count <= capacity). Candidates are the vertex's current influences. Fills sw.dirtyVerts/dirtyCount. Alloc-free.
  * @param bonds broken bond ids (already marked dead in `alive`).
  */

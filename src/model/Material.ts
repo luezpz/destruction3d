@@ -1,4 +1,4 @@
-// Data-driven material records (PLAN §2b). Code must branch on fields, never on names.
+// Data-driven material records (NOTES Design §2b). Code must branch on fields, never on names.
 // Units: density kg/m^3, E/H in GPa, strengths in MPa (converted to Pa only inside kernels).
 
 export type DeformMode = 'none' | 'offsets' | 'joints';
@@ -22,7 +22,7 @@ export interface Material {
   propagation: number; // damage added to neighbour bonds on a break
   grain: { axis: [number, number, number]; strengthRatio: number } | null;
   deform: DeformMode;
-  /** Fake impact dents (PLAN §4, used when deform === 'offsets'). Lengths are fractions of the chunk size (cbrt volume). */
+  /** Fake impact dents (NOTES Design §4, used when deform === 'offsets'). Lengths are fractions of the chunk size (cbrt volume). */
   dent: DentParams;
   hull: HullMode;
   render: { outer: number; inner: number }; // sRGB hex colours (placeholder for render materials)
@@ -114,7 +114,7 @@ export function validateMaterial(m: Material, names: ReadonlySet<string>): strin
   return errs;
 }
 
-/** Builds a table, throwing on duplicate names or invalid records (invalid combos rejected at load, PLAN §2b). */
+/** Builds a table, throwing on duplicate names or invalid records (invalid combos rejected at load, NOTES Design §2b). */
 export function createMaterialTable(materials: Material[] = MATERIAL_PRESETS): MaterialTable {
   const idByName = new Map<string, number>();
   materials.forEach((m, i) => {

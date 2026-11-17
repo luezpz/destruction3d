@@ -1,4 +1,4 @@
-// Chunk poses of a rigid island from its body pose, written into the skin pose buffer (PLAN §4 "Pose per chunk"). Headless.
+// Chunk poses of a rigid island from its body pose, written into the skin pose buffer (NOTES Design §4 "Pose per chunk"). Headless.
 // Chunk pose = body * local: x_c = x_b + q_b t, q_c = q_b r (t, r = chunk pose in the body frame, Island.local).
 
 import { writeChunkPose } from '../kernels/skin';

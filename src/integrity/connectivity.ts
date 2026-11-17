@@ -1,4 +1,4 @@
-// Tier 0 connectivity (PLAN §2): after bond breaks, find chunks that lost every path to a support.
+// Tier 0 connectivity (NOTES Design §2): after bond breaks, find chunks that lost every path to a support.
 // Bidirectional-in-spirit: BFS from each broken bond's ends, stopping as soon as a support (or an already-proven
 // grounded chunk) is reached. Cost is O(size of the detached part) when a piece falls, small when it does not.
 // Setup allocates; queries do not.

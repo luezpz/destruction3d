@@ -1,4 +1,4 @@
-// Culled two-material index buffers (PLAN §6). Headless (no three.js) so it is unit-testable.
+// Culled two-material index buffers (NOTES Design §6). Headless (no three.js) so it is unit-testable.
 // Outer index buffer: static, built once. Inner buffer: append-only; a bond's cut faces (both sides) are copied in on reveal.
 
 import { ChunkModel, OUTER_FACE } from '../model/ChunkModel';

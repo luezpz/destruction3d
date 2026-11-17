@@ -1,4 +1,4 @@
-// Integrity work behind a message boundary (PLAN §7): the same core runs inline (tests, fallback) or in a worker.
+// Integrity work behind a message boundary (NOTES Design §7): the same core runs inline (tests, fallback) or in a worker.
 // Main -> core: bonds to remove, impacts. Core -> main: bonds broken, detached components, dent poses, graph version.
 // No structure solver yet (an external one will plug in here, reading `graph` and reporting bonds to break).
 
@@ -29,7 +29,7 @@ export interface TickReply {
   /** Components of already-floating parts touched by this request's breaks (same layout); 2+ per old part = it split. */
   floatChunks: Uint32Array;
   floatOffset: Uint32Array;
-  /** Chunks whose fake dent pose changed (PLAN §4) and their offset o (3) + tilt th (3) per chunk, structure frame. */
+  /** Chunks whose fake dent pose changed (NOTES Design §4) and their offset o (3) + tilt th (3) per chunk, structure frame. */
   poseChunks: Uint32Array;
   poses: Float64Array;
 }

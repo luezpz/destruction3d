@@ -1,4 +1,4 @@
-// Joint-chain settling + cost (PLAN §7 "measure first"; numbers in NOTES "Joint-chain perf"): a hit 3 cm steel plate
+// Joint-chain settling + cost (NOTES Design §7 "measure first"; numbers in NOTES "Joint-chain perf"): a hit 3 cm steel plate
 // (90 bodies, 171 joints) must come to rest and sleep quickly, since an awake chain costs ~10+ ms/frame in Rapier.
 import { beforeAll, expect, it } from 'vitest';
 import { createMaterialTable, materialId } from '../src/model/Material';

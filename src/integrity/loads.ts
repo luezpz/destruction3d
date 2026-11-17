@@ -1,4 +1,4 @@
-// Load assembly helpers (PLAN §2): chunk masses and gravity loads f_i = m_i g.
+// Load assembly helpers (NOTES Design §2): chunk masses and gravity loads f_i = m_i g.
 
 import { ChunkModel } from '../model/ChunkModel';
 import { MaterialTable } from '../model/Material';

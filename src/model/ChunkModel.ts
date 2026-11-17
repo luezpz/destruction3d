@@ -1,4 +1,4 @@
-// ChunkModel: the one packed (SoA) format every generator produces (PLAN §1). Headless: no three.js/Rapier.
+// ChunkModel: the one packed (SoA) format every generator produces (NOTES Design §1). Headless: no three.js/Rapier.
 // Float64 everywhere; conversion to Float32 happens only at the Rapier/GPU boundary.
 
 /** Chunk flag bits stored in `ChunkModel.chunkFlags`. */

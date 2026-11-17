@@ -1,4 +1,4 @@
-// Static structure bond graph (PLAN §2): alive flags, chunk -> bond adjacency, and tier 0 connectivity on removals.
+// Static structure bond graph (NOTES Design §2): alive flags, chunk -> bond adjacency, and tier 0 connectivity on removals.
 // This is the input/output seam for an external structure solver: it reads the graph (model + alive + materials,
 // masses) and reports bonds to break; the graph turns breaks into detached components. Setup allocates; queries do not.
 

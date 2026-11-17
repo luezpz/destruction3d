@@ -1,4 +1,4 @@
-// GPU vs CPU skin agreement (PLAN M4): starts vite, opens skincheck.html in system Chrome (WebGPU and ?webgl), checks tolerances.
+// GPU vs CPU skin agreement (NOTES M4): starts vite, opens skincheck.html in system Chrome (WebGPU and ?webgl), checks tolerances.
 // Usage: npm run test:gpu   (env CHROME = path to chrome.exe overrides the default)
 import { chromium } from 'playwright-core';
 import { createServer } from 'vite';

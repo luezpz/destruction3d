@@ -1,4 +1,4 @@
-// Verifies Rapier API facts the plan relies on (PLAN "Rapier overlap notes", Risk 4). Results recorded in NOTES.md.
+// Verifies Rapier API facts the plan relies on (NOTES Design "Rapier overlap notes", Risk 4). Results recorded in NOTES.md.
 import { beforeAll, describe, expect, it } from 'vitest';
 import RAPIER from '@dimforge/rapier3d-compat';
 import { createMaterialTable, materialId } from '../src/model/Material';

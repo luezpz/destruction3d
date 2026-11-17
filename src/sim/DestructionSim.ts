@@ -1,4 +1,4 @@
-// Main-thread core loop (PLAN §3, §7) for one structure: bond removals -> integrity (inline or worker) -> breaks ->
+// Main-thread core loop (NOTES Design §3, §7) for one structure: bond removals -> integrity (inline or worker) -> breaks ->
 // island handoff. The frame never waits: at most one integrity request is in flight; removals queue until it returns.
 // No structure solver: bonds break by scripted removal or collision fracture (CollisionBreaker) until the external solver is plugged in.
 
@@ -15,7 +15,7 @@ import { BreakDecision, CollisionBreaker, CollisionBreakOptions } from './Collis
 export interface SimOptions {
   /** Integrity backend; default inline (synchronous). Pass a WorkerIntegrity in the app. */
   client?: IntegrityClient;
-  /** Joint-chain options (PLAN §4b). */
+  /** Joint-chain options (NOTES Design §4b). */
   chains?: JointChainOptions;
   /** Collision fracture for every contact pair (CollisionBreaker). */
   collisionBreak?: CollisionBreakOptions;
@@ -40,7 +40,7 @@ export class DestructionSim {
   readonly chains: JointChains;
   /** Any contact pair with enough approach energy cuts the chunks it touches and keeps its momentum. */
   readonly breaker: CollisionBreaker;
-  /** Fake impact dents (PLAN §4 offsets) on/off; existing dents stay. */
+  /** Fake impact dents (NOTES Design §4 offsets) on/off; existing dents stay. */
   dents = true;
   private inFlight = false;
   private pendingRemove: number[] = [];
@@ -128,7 +128,7 @@ export class DestructionSim {
   }
 
   /**
-   * Queues a dent impact on static chunk c (PLAN §4 fake offsets) if its force reaches the material's dent.minForce.
+   * Queues a dent impact on static chunk c (NOTES Design §4 fake offsets) if its force reaches the material's dent.minForce.
    * Contact point = chunk centre (events carry no point). @param sign +1 / -1 applied to dir (3,). @param dt step (s).
    */
   private queueDent(c: number, sign: number, dir: ArrayLike<number>, force: number, dt: number): void {

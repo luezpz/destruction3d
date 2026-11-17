@@ -1,4 +1,4 @@
-// Tier 0 -> Rapier island handoff (PLAN §3), end to end in Node.
+// Tier 0 -> Rapier island handoff (NOTES Design §3), end to end in Node.
 import { beforeAll, describe, expect, it } from 'vitest';
 import { createMaterialTable, materialId } from '../src/model/Material';
 import { Box, generateFromBoxes } from '../src/model/boxGenerator';

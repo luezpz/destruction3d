@@ -1,4 +1,4 @@
-// Tier 0 connectivity on the structure graph (PLAN §2, §3): removals -> detached components.
+// Tier 0 connectivity on the structure graph (NOTES Design §2, §3): removals -> detached components.
 import { describe, expect, it } from 'vitest';
 import { createMaterialTable, materialId } from '../src/model/Material';
 import { Box, generateFromBoxes } from '../src/model/boxGenerator';

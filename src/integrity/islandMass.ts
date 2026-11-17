@@ -1,4 +1,4 @@
-// Island mass properties from rest cell volumes (PLAN §3 step 2): hulls overlap, so Rapier's own per-hull
+// Island mass properties from rest cell volumes (NOTES Design §3 step 2): hulls overlap, so Rapier's own per-hull
 // volumes would double count; we compute mass, COM and principal inertia here and pass them explicitly.
 
 /** Output of `islandMassProperties`. */

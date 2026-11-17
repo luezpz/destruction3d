@@ -1,4 +1,4 @@
-// Island handoff (PLAN §3): detached components from tier 0 -> dynamic physics bodies.
+// Island handoff (NOTES Design §3): detached components from tier 0 -> dynamic physics bodies.
 // Removes the chunks' static colliders, creates one body per component at its COM with explicit mass/inertia,
 // in the grace group (overlaps the structure without push-out) until `graceTime` passes, then normal debris groups.
 // Also the reverse (`attach`, joint-chain demotion): islands back to static colliders at their current pose.
@@ -43,7 +43,7 @@ export class IslandHandoff {
   readonly slotOf: Int32Array;
   /**
    * Static pose of each chunk (structure frame): centre setPos (3n,), rotation setQ (4n,). Rest pose until a deformed
-   * joint-chain part is demoted (PLAN §4b), then its frozen shape; new islands start from it so nothing pops.
+   * joint-chain part is demoted (NOTES Design §4b), then its frozen shape; new islands start from it so nothing pops.
    */
   readonly setPos: Float64Array;
   readonly setQ: Float64Array;
@@ -74,7 +74,7 @@ export class IslandHandoff {
 
   /**
    * Hands off components chunks[offset[k]..offset[k+1]) for k < count (Connectivity output layout).
-   * Velocity 0: pieces leave the static structure (PLAN §3 step 3). @returns indices of the new islands.
+   * Velocity 0: pieces leave the static structure (NOTES Design §3 step 3). @returns indices of the new islands.
    */
   detach(chunks: Uint32Array, offset: Uint32Array, count: number): number[] {
     const created: number[] = [];
@@ -150,7 +150,7 @@ export class IslandHandoff {
   }
 
   /**
-   * Re-fractures islands split by breaks inside floating parts (PLAN §3): components chunks[offset[k]..offset[k+1]) from
+   * Re-fractures islands split by breaks inside floating parts (NOTES Design §3): components chunks[offset[k]..offset[k+1]) from
    * integrity; an island whose chunks fall into 2+ components is replaced by one body per piece, each at the old body's
    * current pose and rigid-body velocity at its COM (so the render pose doesn't pop). @returns indices of new/reused islands.
    */
@@ -200,7 +200,7 @@ export class IslandHandoff {
   }
 
   /**
-   * Re-attaches whole islands to the static structure at their current pose (joint-chain demotion, PLAN §4b): bodies
+   * Re-attaches whole islands to the static structure at their current pose (joint-chain demotion, NOTES Design §4b): bodies
    * removed, one static collider per chunk at x_c = x_b + q_b t, q_c = q_b r, which becomes the chunk's static pose.
    * Remove the bodies' joints first. @param ids island indices.
    */
@@ -227,7 +227,7 @@ export class IslandHandoff {
     }
   }
 
-  /** Sets static chunk c's visual pose (centre x (3,), quat q (4,)), e.g. a fake dent; colliders stay at rest (PLAN §4). */
+  /** Sets static chunk c's visual pose (centre x (3,), quat q (4,)), e.g. a fake dent; colliders stay at rest (NOTES Design §4). */
   setStaticPose(c: number, x: ArrayLike<number>, q: ArrayLike<number>): void {
     for (let a = 0; a < 3; a++) this.setPos[3 * c + a] = x[a];
     for (let a = 0; a < 4; a++) this.setQ[4 * c + a] = q[a];

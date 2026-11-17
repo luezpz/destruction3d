@@ -1,4 +1,4 @@
-// GPU skin (PLAN §4 "Variable-length weights", "Delivery"): pose + entry data textures read with textureLoad in a TSL positionNode.
+// GPU skin (NOTES Design §4 "Variable-length weights", "Delivery"): pose + entry data textures read with textureLoad in a TSL positionNode.
 // Data textures (not storage buffers) so the WebGL2 fallback works unchanged. Mirrors kernels/skin.ts (CPU reference).
 
 import * as THREE from 'three/webgpu';

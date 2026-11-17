@@ -1,4 +1,4 @@
-// Thin physics interface (PLAN top): everything outside physics/ talks to this, never to Rapier, so Havok is a swap.
+// Thin physics interface (NOTES Design intro): everything outside physics/ talks to this, never to Rapier, so Havok is a swap.
 // All arrays at this boundary are Float32 (the solver's Float64 stays on the other side).
 
 export type BodyHandle = number;
@@ -20,7 +20,7 @@ export interface IslandDesc {
   position: [number, number, number];
   rotation: [number, number, number, number];
   chunks: IslandChunk[];
-  /** Mass (kg), principal inertia (kg m^2) about the COM in the body frame (from rest cell volumes, PLAN §3). */
+  /** Mass (kg), principal inertia (kg m^2) about the COM in the body frame (from rest cell volumes, NOTES Design §3). */
   mass: number;
   inertia: [number, number, number];
   /** Rotation (quaternion x,y,z,w) of the principal inertia axes in the body frame. */
@@ -67,13 +67,13 @@ export interface PhysicsBackend {
   createGround(y: number, groups: number): BodyHandle;
   /** Dynamic sphere (projectile / wrecking ball), not a chunk. @param density kg/m^3 */
   createSphere(radius: number, position: [number, number, number], linvel: [number, number, number], density: number, groups: number): BodyHandle;
-  /** Replaces a collider's hull (refit, PLAN §5); indices are supplied, no hull algorithm. */
+  /** Replaces a collider's hull (refit, NOTES Design §5); indices are supplied, no hull algorithm. */
   setChunkShape(c: ColliderHandle, points: Float32Array, indices: Uint32Array): void;
   setCollisionGroups(c: ColliderHandle, groups: number): void;
   /** Joint between two bodies at body-local anchors; contacts between them are disabled. */
   createJoint(kind: JointKind, a: BodyHandle, b: BodyHandle, anchorA: [number, number, number], anchorB: [number, number, number]): JointHandle;
   /**
-   * Bendable bond (PLAN §4b): translation locked at the anchors, rotation sprung by implicit motors per joint-frame axis
+   * Bendable bond (NOTES Design §4b): translation locked at the anchors, rotation sprung by implicit motors per joint-frame axis
    * (x = bond normal: torsion GJ/L; y, z: bending EI/L) toward `target` angles. frameA/frameB: joint frame in each body (quat x,y,z,w).
    * @param stiffness (N m/rad), damping (N m s/rad) per axis.
    */
@@ -83,7 +83,7 @@ export interface PhysicsBackend {
   /** Moves the motor rest angles of a spring joint (plastic set); stiffness/damping as at creation. */
   setSpringTarget(j: JointHandle, target: [number, number, number], stiffness: [number, number, number], damping: [number, number, number]): void;
   removeJoint(j: JointHandle): void;
-  /** Absolute velocity damping (1/s): damps whole-body modes joint-relative damping leaves (joint chains, PLAN §4b). */
+  /** Absolute velocity damping (1/s): damps whole-body modes joint-relative damping leaves (joint chains, NOTES Design §4b). */
   setBodyDamping(b: BodyHandle, linear: number, angular: number): void;
   /** Puts bodies to sleep now (contacts/impulses wake them); for parts our own rest test says are settled. */
   sleepBodies(bodies: ArrayLike<BodyHandle>): void;
@@ -91,7 +91,7 @@ export interface PhysicsBackend {
   setJointAnchors(j: JointHandle, anchorA: [number, number, number], anchorB: [number, number, number]): void;
   /** Writes pose (x, y, z, qx, qy, qz, qw) of each body into out (7 floats each). */
   readBodyPoses(bodies: ArrayLike<BodyHandle>, out: Float32Array): void;
-  /** Writes x(3) q(4) linvel(3) angvel(3) of each body (13 doubles each, world frame) for joint springs (PLAN §4b). */
+  /** Writes x(3) q(4) linvel(3) angvel(3) of each body (13 doubles each, world frame) for joint springs (NOTES Design §4b). */
   readBodyStates(bodies: ArrayLike<BodyHandle>, out: Float64Array): void;
   /** Applies one-step impulses from world wrenches (force(3), torque(3) per body) times dt; wakes the bodies. */
   applyWrenches(bodies: ArrayLike<BodyHandle>, wrench: Float64Array, dt: number): void;
@@ -108,8 +108,8 @@ export function packGroups(membership: number, filter: number): number {
   return ((membership & 0xffff) << 16 | (filter & 0xffff)) >>> 0;
 }
 
-/** Collision group bits (PLAN 4b budget): bit 0 structure, bit 1 debris, bit 2 grace; the rest for part ids. */
+/** Collision group bits (NOTES Design §4b budget): bit 0 structure, bit 1 debris, bit 2 grace; the rest for part ids. */
 export const GroupBit = { STRUCTURE: 1, DEBRIS: 2, GRACE: 4 } as const;
-/** Bits 3..15 tag joint-chain parts (`partId mod PART_BITS`); parts sharing a bit don't collide (rare, PLAN §4b). */
+/** Bits 3..15 tag joint-chain parts (`partId mod PART_BITS`); parts sharing a bit don't collide (rare, NOTES Design §4b). */
 export const PART_BIT0 = 3;
 export const PART_BITS = 13;

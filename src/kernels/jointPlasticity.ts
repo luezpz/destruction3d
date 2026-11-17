@@ -1,4 +1,4 @@
-// Joint-chain plasticity and fracture (PLAN §4b, corner formulas of §2b). Pure typed-array kernel, no allocation per call.
+// Joint-chain plasticity and fracture (NOTES Design §4b, corner formulas of §2b). Pure typed-array kernel, no allocation per call.
 //
 // Per joint j (bond frame axes [n t1 t2]): total rotation phi: (3,) = [torsion, bend about t1, bend about t2] from body poses,
 // plastic rest target p: (3,), elastic part e = phi - p, moments M = k o e = [Tq, M1, M2] (motor stiffness k: (3,), N m/rad;

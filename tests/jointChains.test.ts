@@ -1,4 +1,4 @@
-// Joint chains (PLAN §4b, M4 tests): stability, permanent set after unload, fracture removes the joint and separates bodies.
+// Joint chains (NOTES Design §4b, M4 tests): stability, permanent set after unload, fracture removes the joint and separates bodies.
 import { beforeAll, describe, expect, it } from 'vitest';
 import { Material, MATERIAL_PRESETS, createMaterialTable, materialId } from '../src/model/Material';
 import { Box, generateFromBoxes } from '../src/model/boxGenerator';

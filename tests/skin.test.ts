@@ -1,4 +1,4 @@
-// Skin weights (CSR, topology-aware, in-place shrink) and CPU skin reference (PLAN §4 "Tests").
+// Skin weights (CSR, topology-aware, in-place shrink) and CPU skin reference (NOTES Design §4 "Tests").
 import { describe, expect, it } from 'vitest';
 import { createMaterialTable, materialId } from '../src/model/Material';
 import { Box, generateFromBoxes } from '../src/model/boxGenerator';

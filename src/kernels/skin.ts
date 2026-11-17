@@ -1,4 +1,4 @@
-// CPU reference of the linear-blend skin (PLAN §4): same formulas as the TSL shader; used by tests and small low-poly parts.
+// CPU reference of the linear-blend skin (NOTES Design §4): same formulas as the TSL shader; used by tests and small low-poly parts.
 
 /** Doubles per chunk in the pose buffer: a = x - q c (3), pad (1), q = (x, y, z, w) (4) — the 2 RGBA texels of the pose texture. */
 export const POSE_STRIDE = 8;

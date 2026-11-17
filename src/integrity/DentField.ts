@@ -1,4 +1,4 @@
-// Fake impact deformation for `deform: 'offsets'` materials (PLAN §4 "Fake deformation"). Headless, runs in the integrity worker.
+// Fake impact deformation for `deform: 'offsets'` materials (NOTES Design §4 "Fake deformation"). Headless, runs in the integrity worker.
 // Each attached chunk keeps a permanent visual offset o_i (3,) and tilt th_i (3,, world rotation vector); colliders stay at rest.
 // Impact at chunk h, point p, unit dir n, impulse J (N s), within graph radius R (bond hops) of h:
 //   s = oMax h_size (exp(-Jacc_h / jRef) - exp(-(Jacc_h + J) / jRef)), Jacc_h = impulse already taken by h: the increment of a

@@ -1,4 +1,4 @@
-// M4 spike (PLAN §4b): explicit joint springs (option a) vs Rapier fixed joints (option b) on a cantilever chain.
+// M4 spike (NOTES Design §4b): explicit joint springs (option a) vs Rapier fixed joints (option b) on a cantilever chain.
 import { beforeAll, describe, expect, it } from 'vitest';
 import { BODY_STATE_STRIDE, JointViews, capJointStiffness, computeJointSprings } from '../src/kernels/jointSpring';
 import { createMaterialTable, materialId } from '../src/model/Material';
@@ -99,7 +99,7 @@ function runChain(mode: 'springs' | 'fixed' | 'motors', n: number, substeps: num
   // the support body sits at the world origin: joint 0's anchor on it is chunk 0's face centre
   const a0: [number, number, number] = [x0 + h / 2, model.chunkPos[1], model.chunkPos[2]];
   v.anchorA.set(a0, 0);
-  // raw bond stiffness (PLAN §2): A = h^2, I = h^4/12, J ~ 0.1406 h^4, L = h
+  // raw bond stiffness (NOTES Design §2): A = h^2, I = h^4/12, J ~ 0.1406 h^4, L = h
   const E = 200e9, G = E / 2.6, A = h * h, Ib = h ** 4 / 12, J = 0.1406 * h ** 4;
   const kRaw = new Float64Array(6 * m);
   for (let j = 0; j < m; j++) kRaw.set([E * A / h, (5 / 6) * G * A / h, (5 / 6) * G * A / h, G * J / h, E * Ib / h, E * Ib / h], 6 * j);

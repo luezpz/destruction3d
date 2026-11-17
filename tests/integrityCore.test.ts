@@ -1,4 +1,4 @@
-// Integrity message boundary (PLAN §7): core replies, transfer round trip, version, one-in-flight client behaviour.
+// Integrity message boundary (NOTES Design §7): core replies, transfer round trip, version, one-in-flight client behaviour.
 import { beforeAll, describe, expect, it } from 'vitest';
 import { createMaterialTable, materialId } from '../src/model/Material';
 import { Box, generateFromBoxes } from '../src/model/boxGenerator';

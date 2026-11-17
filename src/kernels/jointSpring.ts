@@ -1,4 +1,4 @@
-// Explicit 6-axis joint springs between dynamic bodies (PLAN §4b, option a: Rapier JS has no per-axis motors).
+// Explicit 6-axis joint springs between dynamic bodies (NOTES Design §4b, option a: Rapier JS has no per-axis motors).
 // Pure typed-array kernel, no allocation per call.
 //
 // Per joint j between bodies a, b with body-local anchors r_a, r_b (3,) (both at the bond centroid at rest),
@@ -102,7 +102,7 @@ export function computeJointSprings(v: JointViews, state: Float64Array, err: Flo
 }
 
 /**
- * Caps stiffness for explicit stability (PLAN §4b): k <= m_eff omega^2 (translation), I_eff omega^2 (rotation),
+ * Caps stiffness for explicit stability (NOTES Design §4b): k <= m_eff omega^2 (translation), I_eff omega^2 (rotation),
  * omegaMax (rad/s) ~ 1/(2-4 dt). Damping c = 2 zeta sqrt(k m) (zeta = fraction of critical).
  * A translational spring at lever l also acts as a rotational spring k l^2 on the bodies, so translation uses
  * m = min(m_eff, I_eff / l^2) (without this the chain spins up, spike 2026-11-14).

@@ -1,4 +1,4 @@
-// Fake impact dents for `offsets` materials (PLAN §4 "Fake deformation"): falloff, saturation, clamp, ring cracks, detach at the dented pose.
+// Fake impact dents for `offsets` materials (NOTES Design §4 "Fake deformation"): falloff, saturation, clamp, ring cracks, detach at the dented pose.
 import { beforeAll, describe, expect, it } from 'vitest';
 import { createMaterialTable, materialId } from '../src/model/Material';
 import { generateFromBoxes } from '../src/model/boxGenerator';

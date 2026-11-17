@@ -1,4 +1,4 @@
-// Integrity worker entry (PLAN §7): hosts one IntegrityCore; replies transfer their buffers back.
+// Integrity worker entry (NOTES Design §7): hosts one IntegrityCore; replies transfer their buffers back.
 // No `/// <reference lib="webworker" />`: a lib reference applies to the whole tsc program and breaks DOM typing,
 // so the worker scope is typed minimally here.
 

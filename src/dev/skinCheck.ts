@@ -1,4 +1,4 @@
-// GPU vs CPU skin agreement (PLAN M4 tests): renders skinPositionNode output into a float target (one texel per vertex)
+// GPU vs CPU skin agreement (NOTES M4 tests): renders skinPositionNode output into a float target (one texel per vertex)
 // and compares it with kernels/skin.ts. Opened by scripts/skinCheck.mjs; `?webgl` forces the WebGL2 fallback.
 
 import * as THREE from 'three/webgpu';

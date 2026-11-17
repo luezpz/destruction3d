@@ -1,4 +1,4 @@
-// Joint chains for `deform: 'joints'` parts (PLAN §4b): promotion of a static part to one dynamic body per chunk linked by
+// Joint chains for `deform: 'joints'` parts (NOTES Design §4b): promotion of a static part to one dynamic body per chunk linked by
 // spring joints (spherical + 3 implicit angular motors), per-step plasticity (motor target update) and joint fracture.
 // Runs where Rapier runs (main thread). Handshake: a joint break is sent to integrity as a bond removal (same path as scripted
 // cuts); promoted chunks are skipped by IslandHandoff.detach. Demotion (part at rest) re-attaches the bodies as static colliders
@@ -334,7 +334,7 @@ export class JointChains {
   }
 
   /**
-   * Demotion (PLAN §4b): an anchored part at rest for demoteTime, not yielding, goes back to the static structure. The
+   * Demotion (NOTES Design §4b): an anchored part at rest for demoteTime, not yielding, goes back to the static structure. The
    * bodies reachable from the static body through alive joints are re-attached as static colliders at their current
    * (deformed) pose; their joints are dropped without bond removal (the bonds stay intact), eps_p is kept per bond.
    */
@@ -381,7 +381,7 @@ export class JointChains {
   }
 
   /**
-   * Rest-state bake (PLAN §4b): in 2D parts (grids with loops) independently updated plastic targets can't all be met with
+   * Rest-state bake (NOTES Design §4b): in 2D parts (grids with loops) independently updated plastic targets can't all be met with
    * locked anchors, so the part stays strained and the solver jitters forever (tests/chainPerf). Once a part has stopped
    * yielding for bakeDelay, its current shape becomes the stress-free rest: target = phi, anchors moved together.
    * Cost: residual elastic stress at bake time becomes permanent set (at most ~one elastic sag per yield episode).

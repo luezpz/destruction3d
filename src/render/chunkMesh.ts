@@ -1,4 +1,4 @@
-// Debug/static chunk mesh: two meshes (outer + inner material) sharing one vertex buffer (PLAN §6).
+// Debug/static chunk mesh: two meshes (outer + inner material) sharing one vertex buffer (NOTES Design §6).
 // Vertices are rest positions in the structure frame; the TSL skin (skinMaterial.ts) moves them from the pose texture.
 
 import * as THREE from 'three/webgpu';
