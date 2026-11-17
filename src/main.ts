@@ -5,7 +5,7 @@ import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import GUI from 'lil-gui';
 import { ChunkModel, surfaceChunkCount } from './model/ChunkModel';
-import { MATERIAL_PRESETS, MaterialScale, UNIT_SCALE, createMaterialTable, scaleMaterials } from './model/Material';
+import { MATERIAL_PRESETS, MaterialScale, UNIT_SCALE, createMaterialTable, scaleMaterials, type MaterialTable } from './model/Material';
 import { buildCullBuffers } from './render/cullBuffers';
 import { ChunkMeshes, createChunkMeshes, revealBondFaces } from './render/chunkMesh';
 import { BondLines, createBondLines, updateBondColors } from './render/bondLines';
@@ -25,6 +25,7 @@ const ALL = packGroups(0xffff, 0xffff);
 /** Everything that belongs to the currently loaded structure. */
 interface Loaded {
   model: ChunkModel;
+  table: MaterialTable;
   meshes: ChunkMeshes;
   bonds: BondLines;
   broken: Uint8Array;
@@ -112,7 +113,7 @@ async function main(): Promise<void> {
     const sim = new DestructionSim(model, table, physics, { client, collisionBreak: { energyScale: params.impactEnergy, minSpeed: params.breakMinSpeed } });
     sim.dents = params.dents;
     scene.add(meshes.outer, meshes.inner, bonds.lines);
-    cur = { model, meshes, bonds, broken: new Uint8Array(model.bondCount), physics, sim, shownBroken: 0, balls: [], skin: { adj, alive, sw, tex } };
+    cur = { model, table, meshes, bonds, broken: new Uint8Array(model.bondCount), physics, sim, shownBroken: 0, balls: [], skin: { adj, alive, sw, tex } };
     stats.mode = params.sync ? 'sync (inline)' : 'async (worker)';
     Object.assign(stats, {
       chunks: model.chunkCount, surface: surfaceChunkCount(model), bonds: model.bondCount,
@@ -168,7 +169,13 @@ async function main(): Promise<void> {
     }
     // demoted (frozen deformed) chunks: static pose written once
     const h = sim.handoff;
-    for (const c of h.staticPoseDirty) writeChunkPose(skin.tex.pose, c, h.setPos, 3 * c, h.setQ, 4 * c, l.model.chunkPos, 3 * c);
+    for (const c of h.staticPoseDirty) {
+      writeChunkPose(skin.tex.pose, c, h.setPos, 3 * c, h.setQ, 4 * c, l.model.chunkPos, 3 * c);
+      // a dented `offsets` chunk moves off its neighbours with bonds intact: show its cut faces so the gaps aren't see-through
+      if (l.table.materials[l.model.chunkMaterial[c]].deform === 'offsets') {
+        for (let k = skin.adj.adjOffset[c]; k < skin.adj.adjOffset[c + 1]; k++) revealBondFaces(meshes, skin.adj.adjBond[k]);
+      }
+    }
     if (sim.handoff.islands.length || h.staticPoseDirty.length) skin.tex.poseTex.needsUpdate = true;
     h.staticPoseDirty.length = 0;
     if (changed) refreshColors(l);
