@@ -53,20 +53,14 @@ export class IntegrityCore {
   /** @param table kept for the future structure solver (materials per chunk/bond). */
   constructor(readonly model: ChunkModel, readonly table: MaterialTable) {
     this.graph = new StructureGraph(model);
-    this.dents = new DentField(model, table, this.graph.adj);
+    this.dents = new DentField(model, table);
   }
 
-  /** Handles one tick: dents from impacts, then removals + dent cracks, tier 0. @returns breaks, components, dent poses (copies). */
+  /** Handles one tick: dents from impacts, then removals, tier 0 (dents never break bonds). @returns breaks, components, dent poses (copies). */
   tick(req: TickRequest): TickReply {
     const g = this.graph, d = this.dents, im = req.impacts;
-    if (im) for (let o = 0; o + IMPACT_STRIDE <= im.length; o += IMPACT_STRIDE) d.apply(im[o], im, o + 1, im, o + 4, im[o + 7], im[o + 8], g.attached, g.alive);
-    let remove = req.remove;
-    if (d.breakCount) {
-      remove = new Uint32Array(req.remove.length + d.breakCount);
-      remove.set(req.remove); remove.set(d.breaks.subarray(0, d.breakCount), req.remove.length);
-      d.clearBreaks();
-    }
-    g.removeBonds(remove);
+    if (im) for (let o = 0; o + IMPACT_STRIDE <= im.length; o += IMPACT_STRIDE) d.apply(im[o], im, o + 4, im[o + 7], im[o + 8], g.attached);
+    g.removeBonds(req.remove);
     const poseChunks = d.dirty.slice(0, d.dirtyCount), poses = new Float64Array(6 * poseChunks.length);
     poseChunks.forEach((c, k) => { poses.set(d.offset.subarray(3 * c, 3 * c + 3), 6 * k); poses.set(d.tilt.subarray(3 * c, 3 * c + 3), 6 * k + 3); });
     d.clearDirty();

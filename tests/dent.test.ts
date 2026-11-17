@@ -22,32 +22,48 @@ function impact(core: IntegrityCore, c: number, J: number, F = 1e6) {
 }
 
 describe('dent field', () => {
-  it('falls off with graph distance, saturates with impulse, ignores weak forces', () => {
-    const core = new IntegrityCore(wall(), table), o = core.dents.offset;
+  it('moves only the damaged chunk, along the hit direction, saturating with damage points', () => {
+    const core = new IntegrityCore(wall(), table), o = core.dents.offset, t = core.dents.tilt;
     impact(core, 12, 1e3, dp.minForce * 0.5);
     expect(o.every((v) => v === 0)).toBe(true);
     const r = impact(core, 12, 100);
     const s = dp.oMax * h * (1 - Math.exp(-100 / dp.jRef));
     expect(o[3 * 12 + 2]).toBeCloseTo(s, 9);
-    expect(o[3 * 13 + 2]).toBeCloseTo(s * (1 - 0.25) ** 3, 9); // one hop, R = 2: phi(1/2)
-    expect(o[3 * 14 + 2]).toBe(0); // two hops = R: phi(1) = 0
-    expect(Array.from(r.poseChunks).sort((a, b) => a - b)).toEqual([7, 11, 12, 13, 17]);
-    expect(r.poses[6 * Array.from(r.poseChunks).indexOf(12) + 2]).toBeCloseTo(s, 9);
-    expect(r.broken.length).toBe(0); // gentle hit: dent without cracks
-    // tilt: neighbours lean around the hit (n x (c - p)), the hit chunk itself doesn't
-    expect(Math.hypot(...core.dents.tilt.subarray(36, 39))).toBe(0);
-    expect(core.dents.tilt[3 * 13 + 1]).toBeGreaterThan(0); // +x neighbour pushed +z rotates about +y
-    for (let k = 0; k < 20; k++) impact(core, 11 + 10, 1e5); // far corner region, hammered: clamp holds
-    for (let i = 0; i < 25; i++) expect(Math.hypot(o[3 * i], o[3 * i + 1], o[3 * i + 2])).toBeLessThanOrEqual(dp.oMax * h + 1e-12);
+    expect(Math.hypot(o[36], o[37])).toBe(0); // displaced along the incoming direction only
+    expect(Array.from(r.poseChunks)).toEqual([12]); // neighbours untouched
+    for (let i = 0; i < 25; i++) if (i !== 12) expect(o[3 * i + 2]).toBe(0);
+    expect(core.dents.points[12]).toBeCloseTo(100 / dp.jRef, 12);
+    const th1 = Math.hypot(t[36], t[37], t[38]);
+    expect(th1).toBeGreaterThan(0);
+    expect(th1).toBeCloseTo(dp.tilt * (1 - Math.exp(-100 / dp.jRef)), 9); // first hit: one random axis
+    // more damage -> more displaced, bounded by the clamps
+    for (let k = 0; k < 20; k++) impact(core, 12, 1e4);
+    expect(o[3 * 12 + 2]).toBeGreaterThan(s);
+    expect(Math.hypot(o[36], o[37], o[38])).toBeLessThanOrEqual(dp.oMax * h + 1e-12);
+    expect(Math.hypot(t[36], t[37], t[38])).toBeLessThanOrEqual(dp.tilt + 1e-12);
   });
 
-  it('a hard hit cracks the ring around the hit chunk and punches it out', () => {
+  it('dent.offset / dent.rotate switch positional and rotational dents per material', () => {
+    const only = (offset: boolean, rotate: boolean) => {
+      const t2 = createMaterialTable(table.materials.map((m) => ({ ...m, dent: { ...m.dent, offset, rotate } })));
+      const m = generateFromBoxes(gridBoxes({ counts: [5, 5, 1], cell: [h, h, h], material: materialId(t2, 'concrete'), supportBottom: true }), t2);
+      const core = new IntegrityCore(m, t2), im = new Float64Array(IMPACT_STRIDE), p = m.chunkPos;
+      im.set([12, p[36], p[37], p[38], 0, 0, 1, 500, 1e6]);
+      const r = core.tick({ type: 'tick', remove: new Uint32Array(0), impacts: im });
+      const len = (v: Float64Array) => Math.hypot(v[36], v[37], v[38]);
+      return { o: len(core.dents.offset), t: len(core.dents.tilt), d: core.dents.points[12], n: r.poseChunks.length };
+    };
+    const pos = only(true, false), rot = only(false, true), none = only(false, false);
+    expect(pos.o).toBeGreaterThan(0); expect(pos.t).toBe(0);
+    expect(rot.o).toBe(0); expect(rot.t).toBeGreaterThan(0);
+    expect(none.o + none.t).toBe(0); expect(none.n).toBe(0); expect(none.d).toBeGreaterThan(0);
+  });
+
+  it('a hard hit never breaks bonds', () => {
     const core = new IntegrityCore(wall(), table);
-    const r = impact(core, 12, 1e5);
-    const m = core.model, ring = [] as number[];
-    for (let b = 0; b < m.bondCount; b++) if (m.bondA[b] === 12 || m.bondB[b] === 12) ring.push(b);
-    expect(Array.from(r.broken).sort((a, b) => a - b)).toEqual(ring.sort((a, b) => a - b));
-    expect(Array.from(r.detachedChunks)).toEqual([12]);
+    const r = impact(core, 12, 1e7);
+    expect(r.broken.length).toBe(0);
+    expect(r.detachedChunks.length).toBe(0);
   });
 });
 
